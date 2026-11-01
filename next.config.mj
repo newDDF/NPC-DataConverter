@@ -1,0 +1,9 @@
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: 'export', // 开启静态 HTML 导出
+  images: {
+    unoptimized: true,
+  },
+};
+
+export default nextConfig;
