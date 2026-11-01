@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { detectFormat, parseTextData, parseExcelBuffer, serializeRows, createExcelBlob } from '@/utils/parsers';
 import { 
   ArrowRightLeft, 
   Copy, 
@@ -110,6 +111,78 @@ ORD-9014,Robert Chen,USB-C Hub,3,25.50,76.50,Delivered,2026-10-22`
   }
 };
 
+const renderDataTable = (
+  rows: Record<string, any>[],
+  emptyMessage: string
+) => {
+  if (rows.length === 0) {
+    return (
+      <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-slate-300 dark:border-slate-700 p-6 text-center text-xs text-slate-500 dark:text-slate-400">
+        {emptyMessage}
+      </div>
+    );
+  }
+
+  const columns = Array.from(
+    new Set(rows.flatMap((row) => Object.keys(row)))
+  );
+
+  if (columns.length === 0) {
+    return (
+      <div className="flex flex-1 items-center justify-center text-xs text-slate-500">
+        No tabular fields found.
+      </div>
+    );
+  }
+
+  const formatCell = (value: unknown): string => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'object') {
+      return JSON.stringify(value) ?? String(value);
+    }
+    return String(value);
+  };
+
+  return (
+    <div className="flex-1 min-h-0 overflow-auto rounded-xl border border-slate-200 dark:border-slate-800">
+      <table className="min-w-full border-collapse text-left text-xs">
+        <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800">
+          <tr>
+            {columns.map((column) => (
+              <th
+                key={column}
+                className="whitespace-nowrap border-b border-slate-200 dark:border-slate-700 px-3 py-2 font-semibold text-slate-700 dark:text-slate-200"
+              >
+                {column}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr
+              key={rowIndex}
+              className="border-b border-slate-100 dark:border-slate-800 last:border-0 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+            >
+              {columns.map((column) => (
+                <td
+                  key={column}
+                  className="max-w-xs whitespace-pre-wrap break-words px-3 py-2 align-top text-slate-600 dark:text-slate-300"
+                >
+                  {formatCell(row[column])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 px-3 py-2 text-[11px] text-slate-500 dark:text-slate-400">
+        {rows.length} record(s) · {columns.length} field(s)
+      </div>
+    </div>
+  );
+};
+
 export default function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [inputFormat, setInputFormat] = useState<InputFormatOption>('auto');
@@ -117,6 +190,9 @@ export default function App() {
   const [outputFormat, setOutputFormat] = useState<DataFormat>('json');
   const [inputData, setInputData] = useState(SAMPLES.users.data);
   const [outputData, setOutputData] = useState('');
+  const [outputBlob, setOutputBlob] = useState<Blob | null>(null);
+  const [recordCount, setRecordCount] = useState(0);
+  const [convertedRows, setConvertedRows] = useState<Record<string, any>[]>([]);
   const [isCopied, setIsCopied] = useState(false);
 
   const [availableFields, setAvailableFields] = useState<string[]>([]);
@@ -126,7 +202,11 @@ export default function App() {
 
   const [inputViewMode, setInputViewMode] = useState<'code' | 'table'>('code');
   const [outputViewMode, setOutputViewMode] = useState<'code' | 'table'>('code');
-  const [draggedField, setDraggedField] = useState<string | null>(null);
+  const [activeDrag, setActiveDrag] = useState<{
+    field: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   useEffect(() => {
     if (theme === 'dark') {
@@ -136,21 +216,6 @@ export default function App() {
     }
   }, [theme]);
 
-  const detectFormat = (text: string): DataFormat => {
-    if (!text || text.trim() === '') return 'json';
-    const trimmed = text.trim();
-    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-      try {
-        JSON.parse(trimmed);
-        return 'json';
-      } catch {
-        // ignore
-      }
-    }
-    if (trimmed.startsWith('<') && trimmed.endsWith('>')) return 'xml';
-    if (trimmed.includes(':') && !trimmed.includes(',')) return 'yaml';
-    return 'csv';
-  };
 
   const activeInputFormat = inputFormat === 'auto' ? detectedFormat : inputFormat;
 
@@ -160,39 +225,20 @@ export default function App() {
     }
   }, [inputData, inputFormat]);
 
-  const parseRawToJS = useCallback((raw: string, fmt: DataFormat): Record<string, any>[] => {
-    if (!raw || raw.trim() === '') return [];
-    let parsed: any = null;
-    try {
-      if (fmt === 'json' || raw.trim().startsWith('{') || raw.trim().startsWith('[')) {
-        parsed = JSON.parse(raw);
-      } else if (fmt === 'csv') {
-        const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
-        if (lines.length > 0) {
-          const headers = lines[0].split(',').map(h => h.trim().replace(/^"(.*)"$/, '$1'));
-          parsed = lines.slice(1).map(line => {
-            const values = line.split(',').map(v => v.trim().replace(/^"(.*)"$/, '$1'));
-            const row: Record<string, any> = {};
-            headers.forEach((h, idx) => {
-              row[h] = values[idx] !== undefined ? values[idx] : '';
-            });
-            return row;
-          });
-        } else {
-          parsed = [];
-        }
-      } else {
-        parsed = JSON.parse(raw);
-      }
-    } catch {
-      parsed = [{ id: 101, name: "Sample Record", status: "Active", info: "Fallback data" }];
-    }
+  const parseRawToJS = useCallback(
+    (raw: string, fmt: DataFormat): Record<string, any>[] => {
+      return parseTextData(raw, fmt);
+    },
+    []
+  );
 
-    if (!Array.isArray(parsed)) {
-      parsed = typeof parsed === 'object' && parsed !== null ? [parsed] : [];
+  const inputPreviewRows = useMemo(() => {
+    try {
+      return parseRawToJS(inputData, activeInputFormat);
+    } catch {
+      return [];
     }
-    return parsed;
-  }, []);
+  }, [inputData, activeInputFormat, parseRawToJS]);
 
   useEffect(() => {
     try {
@@ -214,83 +260,153 @@ export default function App() {
         });
       }
     } catch {
-      // ignore
+      setAvailableFields([]);
+      setSelectedFields([]);
     }
   }, [inputData, activeInputFormat, parseRawToJS]);
 
   const handleConvert = () => {
     try {
-      const jsData = parseRawToJS(inputData, activeInputFormat);
-      const filtered = jsData.map((row) => {
-        const r: Record<string, any> = {};
-        selectedFields.forEach((field) => {
-          if (row[field] !== undefined) r[field] = row[field];
+      const rows = parseRawToJS(inputData, activeInputFormat);
+      setRecordCount(rows.length);
+
+      const fields = selectedFields.length > 0
+        ? selectedFields
+        : availableFields.length > 0
+          ? availableFields
+          : Object.keys(rows[0] ?? {});
+
+      const filtered = rows.map((row) => {
+        const result: Record<string, any> = {};
+        fields.forEach((field) => {
+          if (Object.prototype.hasOwnProperty.call(row, field)) {
+            result[field] = row[field];
+          }
         });
-        return r;
+        return result;
       });
 
-      let res = '';
-      if (outputFormat === 'json') {
-        res = JSON.stringify(filtered, null, 2);
-      } else if (outputFormat === 'csv') {
-        if (filtered.length > 0) {
-          const keys = selectedFields.length > 0 ? selectedFields : Object.keys(filtered[0]);
-          res = keys.join(',') + '\n' + filtered.map(row => keys.map(k => row[k] || '').join(',')).join('\n');
-        }
-      } else if (outputFormat === 'md') {
-        if (filtered.length > 0) {
-          const keys = selectedFields.length > 0 ? selectedFields : Object.keys(filtered[0]);
-          res = '| ' + keys.join(' | ') + ' |\n';
-          res += '| ' + keys.map(() => '---').join(' | ') + ' |\n';
-          filtered.forEach(row => {
-            res += '| ' + keys.map(k => row[k] || '').join(' | ') + ' |\n';
-          });
-        }
+      setConvertedRows(filtered);
+
+      if (outputFormat === 'excel') {
+        setOutputBlob(createExcelBlob(filtered));
+        setOutputData(
+          `Excel workbook ready. ${filtered.length} record(s) will be exported to an .xlsx file.`
+        );
       } else {
-        res = JSON.stringify(filtered, null, 2);
+        setOutputBlob(null);
+        setOutputData(serializeRows(filtered, outputFormat, fields));
       }
-      setOutputData(res);
-    } catch {
-      setOutputData('Conversion error: Invalid source data format.');
+    } catch (error) {
+      setOutputBlob(null);
+      setRecordCount(0);
+      setConvertedRows([]);
+      const message = error instanceof Error ? error.message : 'Unknown conversion error';
+      setOutputData(`Conversion error: ${message}`);
     }
   };
 
   useEffect(() => {
     handleConvert();
-  }, [inputData, activeInputFormat, outputFormat, selectedFields, parseRawToJS]);
+  }, [inputData, activeInputFormat, outputFormat, selectedFields, availableFields, parseRawToJS]);
 
-  const handleCopy = () => {
-    if (!outputData) return;
-    navigator.clipboard.writeText(outputData);
-    setIsCopied(true);
-    setTimeout(() => setIsCopied(false), 2000);
+  const handleCopy = async () => {
+    if (!outputData || outputFormat === 'excel') return;
+
+    try {
+      await navigator.clipboard.writeText(outputData);
+      setIsCopied(true);
+      window.setTimeout(() => setIsCopied(false), 2000);
+    } catch {
+      setIsCopied(false);
+    }
   };
 
   const handleDownload = () => {
     if (!outputData) return;
-    const blob = new Blob([outputData], { type: 'text/plain;charset=utf-8' });
+
+    const isExcel = outputFormat === 'excel';
+    const blob = isExcel && outputBlob
+      ? outputBlob
+      : new Blob([outputData], { type: 'text/plain;charset=utf-8' });
+
+    const extension = isExcel ? 'xlsx' : outputFormat;
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `converted_data.${outputFormat}`;
-    a.click();
+    const anchor = document.createElement('a');
+
+    anchor.href = url;
+    anchor.download = `converted_data.${extension}`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  const handleDragStart = (field: string) => {
-    setDraggedField(field);
-  };
-
-  const handleDragOver = (e: React.DragEvent, field: string) => {
+  const handleFieldPointerDown = (
+    e: React.PointerEvent<HTMLSpanElement>,
+    field: string
+  ) => {
     e.preventDefault();
-    if (!draggedField || draggedField === field) return;
-    const fromIdx = availableFields.indexOf(draggedField);
-    const toIdx = availableFields.indexOf(field);
-    if (fromIdx < 0 || toIdx < 0) return;
+    e.stopPropagation();
 
-    const newFields = [...availableFields];
-    newFields.splice(fromIdx, 1);
-    newFields.splice(toIdx, 0, draggedField);
-    setAvailableFields(newFields);
+    e.currentTarget.setPointerCapture(e.pointerId);
+
+    setActiveDrag({
+      field,
+      x: e.clientX,
+      y: e.clientY,
+    });
+  };
+
+  const handleFieldPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!activeDrag) return;
+
+    setActiveDrag((current) =>
+      current
+        ? { ...current, x: e.clientX, y: e.clientY }
+        : null
+    );
+
+    const element = document.elementFromPoint(e.clientX, e.clientY);
+    const targetRow = element?.closest<HTMLElement>('[data-field-key]');
+    const targetField = targetRow?.dataset.fieldKey;
+    const sourceField = activeDrag.field;
+
+    if (!targetField || targetField === sourceField || !targetRow) return;
+
+    const rect = targetRow.getBoundingClientRect();
+    const insertAfter = e.clientY > rect.top + rect.height / 2;
+
+    const reorderedFields = [...availableFields];
+    const fromIndex = reorderedFields.indexOf(sourceField);
+
+    if (fromIndex < 0) return;
+
+    reorderedFields.splice(fromIndex, 1);
+
+    const targetIndex = reorderedFields.indexOf(targetField);
+    if (targetIndex < 0) return;
+
+    const insertIndex = targetIndex + (insertAfter ? 1 : 0);
+    reorderedFields.splice(insertIndex, 0, sourceField);
+
+    const hasChanged = reorderedFields.some(
+      (field, index) => field !== availableFields[index]
+    );
+
+    if (!hasChanged) return;
+
+    setAvailableFields(reorderedFields);
+
+    setSelectedFields((previous) => {
+      const selected = new Set(previous);
+      return reorderedFields.filter((field) => selected.has(field));
+    });
+  };
+
+  const handleFieldPointerUp = () => {
+    setActiveDrag(null);
   };
 
   const filteredFields = availableFields.filter(f => f.toLowerCase().includes(fieldSearchTerm.toLowerCase()));
@@ -308,11 +424,19 @@ export default function App() {
           background: transparent;
         }
         ::-webkit-scrollbar-thumb {
-          background: linear-gradient(to bottom, #ff6be4, #f43f5e);
+          background: linear-gradient(
+            to bottom,
+            rgba(255, 107, 228, 0.5),
+            rgba(244, 63, 94, 0.5)
+          );
           border-radius: 9999px;
         }
         ::-webkit-scrollbar-thumb:hover {
-          background: linear-gradient(to bottom, #e04cc8, #e11d48);
+          background: linear-gradient(
+            to bottom,
+            rgba(224, 76, 200, 0.65),
+            rgba(225, 29, 72, 0.65)
+          );
         }
       `}</style>
 
@@ -359,10 +483,10 @@ export default function App() {
       </header>
 
       {/* Main Layout 3:9 ratio */}
-      <main className="flex-1 max-w-[1700px] w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      <main className="flex-1 max-w-[1700px] w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
         
         {/* Left Sidebar (3 Cols) */}
-        <aside className="lg:col-span-3 space-y-5 flex flex-col">
+        <aside className="lg:col-span-3 grid grid-rows-[auto_minmax(0,1fr)] gap-5 self-stretch min-h-0">
           
           {/* Format Pipeline Unified Card */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm space-y-4">
@@ -416,7 +540,7 @@ export default function App() {
           </div>
 
           {/* Fields Selection & Drag Reorder Card */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm space-y-3 flex-1 flex flex-col">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm space-y-3 min-h-0 flex flex-col">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center space-x-1.5">
                 <ListFilter className="w-4 h-4 text-[#ff6be4]" />
@@ -453,34 +577,63 @@ export default function App() {
               </button>
             </div>
 
-            <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto p-0.5">
+            <div
+              className="relative flex flex-col gap-1.5 max-h-64 overflow-y-auto p-0.5"
+              onPointerMove={handleFieldPointerMove}
+              onPointerUp={handleFieldPointerUp}
+              onPointerCancel={() => setActiveDrag(null)}
+            >
               {filteredFields.map((field) => {
                 const isSelected = selectedFields.includes(field);
                 return (
                   <div
                     key={field}
-                    draggable
-                    onDragStart={() => handleDragStart(field)}
-                    onDragOver={(e) => handleDragOver(e, field)}
+                    data-field-key={field}
                     onClick={() => {
                       setSelectedFields(prev =>
                         isSelected ? prev.filter(f => f !== field) : [...prev, field]
                       );
                     }}
-                    className={`px-2.5 py-2 rounded-xl text-xs font-medium flex items-center justify-between transition-all border cursor-move ${
-                      isSelected
-                        ? 'bg-pink-50/80 dark:bg-pink-950/40 text-[#ff6be4] border-pink-400 shadow-sm'
-                        : 'bg-slate-50 dark:bg-slate-800/80 text-slate-500 border-slate-200 dark:border-slate-700'
+                    className={`px-2.5 py-2 rounded-xl text-xs font-medium flex items-center justify-between transition-all border cursor-default ${
+                      activeDrag?.field === field
+                        ? 'opacity-30 border-dashed border-[#ff6be4]'
+                        : isSelected
+                          ? 'bg-pink-50/80 dark:bg-pink-950/40 text-[#ff6be4] border-pink-400 shadow-sm'
+                          : 'bg-slate-50 dark:bg-slate-800/80 text-slate-500 border-slate-200 dark:border-slate-700'
                     }`}
                   >
                     <div className="flex items-center gap-2 overflow-hidden">
-                      <span className="text-slate-400 font-mono">=</span>
+                      <span
+                        onPointerDown={(e) => handleFieldPointerDown(e, field)}
+                        onClick={(e) => e.stopPropagation()}
+                        title="Drag to reorder field"
+                        style={{ touchAction: 'none' }}
+                        className="text-slate-400 font-mono cursor-grab active:cursor-grabbing select-none"
+                      >
+                        ⠿
+                      </span>
                       <span className="truncate text-[11px] font-mono">{field}</span>
                     </div>
                     {isSelected && <Check className="w-3.5 h-3.5 text-[#ff6be4]" />}
                   </div>
                 );
               })}
+
+              {activeDrag && (
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none fixed z-[9999] flex items-center gap-2 rounded-xl border border-[#ff6be4] bg-white/95 dark:bg-slate-900/95 px-3 py-2 text-xs font-medium text-[#ff6be4] shadow-2xl scale-[1.03]"
+                  style={{
+                    left: activeDrag.x,
+                    top: activeDrag.y,
+                    transform: 'translate(-50%, -50%)',
+                    minWidth: '150px',
+                  }}
+                >
+                  <span className="font-mono text-slate-400">⠿</span>
+                  <span className="truncate">{activeDrag.field}</span>
+                </div>
+              )}
             </div>
           </div>
         </aside>
@@ -554,14 +707,39 @@ export default function App() {
                     browse file
                     <input
                       type="file"
-                      onChange={(e) => {
+                      accept=".json,.csv,.xml,.yaml,.yml,.md,.xlsx,.xls"
+                      onChange={async (e) => {
                         const file = e.target.files?.[0];
                         if (!file) return;
-                        const reader = new FileReader();
-                        reader.onload = (evt) => {
-                          if (evt.target?.result) setInputData(evt.target.result as string);
-                        };
-                        reader.readAsText(file);
+
+                        try {
+                          const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+
+                          if (extension === 'xlsx' || extension === 'xls') {
+                            const buffer = await file.arrayBuffer();
+                            const rows = parseExcelBuffer(buffer);
+                            setInputData(JSON.stringify(rows, null, 2));
+                            setInputFormat('json');
+                          } else {
+                            const text = await file.text();
+                            const formats: Record<string, DataFormat> = {
+                              json: 'json',
+                              csv: 'csv',
+                              xml: 'xml',
+                              yaml: 'yaml',
+                              yml: 'yaml',
+                              md: 'md',
+                            };
+
+                            setInputData(text);
+                            setInputFormat(formats[extension] ?? 'auto');
+                          }
+                        } catch (error) {
+                          const message = error instanceof Error ? error.message : 'Unable to read file';
+                          setOutputData(`File import error: ${message}`);
+                        } finally {
+                          e.target.value = '';
+                        }
                       }}
                       className="hidden"
                     />
@@ -578,9 +756,10 @@ export default function App() {
                     className="w-full flex-1 font-mono text-xs p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#ff6be4] resize-none"
                   />
                 ) : (
-                  <div className="overflow-x-auto flex-1 border border-slate-200 dark:border-slate-800 rounded-xl p-3 text-xs font-mono">
-                    Table preview mode active.
-                  </div>
+                  renderDataTable(
+                    inputPreviewRows,
+                    'No input records available. Check the source data and selected format.'
+                  )
                 )}
               </div>
             </div>
@@ -609,22 +788,32 @@ export default function App() {
               </div>
 
               <div className="p-4 flex-1 flex flex-col">
-                <textarea
-                  readOnly
-                  value={outputData}
-                  placeholder="Converted output will appear here in real-time..."
-                  className="w-full flex-1 font-mono text-xs p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none resize-none"
-                />
+                {outputViewMode === 'code' ? (
+                  <textarea
+                    readOnly
+                    value={outputData}
+                    placeholder="Converted output will appear here in real-time..."
+                    className="w-full flex-1 font-mono text-xs p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none resize-none"
+                  />
+                ) : (
+                  renderDataTable(
+                    convertedRows,
+                    outputData.startsWith('Conversion error:')
+                      ? outputData
+                      : 'No converted records available yet.'
+                  )
+                )}
               </div>
 
               <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 flex items-center justify-between flex-wrap gap-3">
                 <div className="text-xs text-slate-500 dark:text-slate-400">
-                  Records: <span className="font-semibold text-slate-700 dark:text-slate-300">3</span> · Fields: <span className="font-semibold text-slate-700 dark:text-slate-300">{selectedFields.length}</span>
+                  Records: <span className="font-semibold text-slate-700 dark:text-slate-300">{recordCount}</span> · Fields: <span className="font-semibold text-slate-700 dark:text-slate-300">{selectedFields.length}</span>
                 </div>
 
                 <div className="flex items-center space-x-2">
                   <button
                     onClick={handleCopy}
+                    disabled={!outputData || outputFormat === 'excel'}
                     className="px-4 py-2 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold rounded-xl transition-all flex items-center"
                   >
                     {isCopied ? <Check className="w-3.5 h-3.5 mr-1.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5 mr-1.5" />}
@@ -632,6 +821,7 @@ export default function App() {
                   </button>
                   <button
                     onClick={handleDownload}
+                    disabled={!outputData || (outputFormat === 'excel' && !outputBlob)}
                     className="px-4 py-2 bg-gradient-to-r from-[#ff6be4] to-rose-500 hover:opacity-90 text-white text-xs font-semibold rounded-xl shadow-md shadow-pink-500/25 transition-all flex items-center"
                   >
                     <Download className="w-3.5 h-3.5 mr-1.5" /> Download File
@@ -683,7 +873,13 @@ export default function App() {
       {/* Glassmorphic Modal Dialogs */}
       {activeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/40 backdrop-blur-md">
-          <div className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border border-slate-200 dark:border-slate-800 rounded-3xl max-w-xl w-full p-8 shadow-2xl relative space-y-4">
+          <div
+            className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border border-slate-200 dark:border-slate-800 rounded-3xl overflow-y-auto p-8 shadow-2xl relative space-y-5"
+            style={{
+              width: 'min(90vw, 672px, 113.333vh)',
+              height: 'min(67.5vw, 504px, 85vh)',
+            }}
+          >
             <button
               onClick={() => setActiveModal(null)}
               className="absolute right-6 top-6 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
@@ -692,25 +888,154 @@ export default function App() {
             </button>
 
             {activeModal === 'privacy' ? (
-              <div className="space-y-3">
+              <div className="space-y-4 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                 <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-lg">
                   <ShieldCheck className="w-5 h-5 text-[#ff6be4]" />
                   <h2>Privacy Policy</h2>
                 </div>
-                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                  Effective Date: October 2026<br /><br />
-                  NPC-DateConverter is deeply committed to safeguarding your personal data. All transformation and parsing operations execute entirely within your browser's local sandbox environment. Your files are never uploaded or stored on remote servers.
+                <p>Effective Date: November 1, 2026</p>
+                <p>
+                  This Privacy Policy explains how this data conversion service handles information when you visit or use the website. We aim to minimize the collection of personal information and to process conversion data in your browser whenever the selected feature supports local processing.
+                </p>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">1. Data Processing</h3>
+                  <p>
+                    Text and files selected for conversion are processed by the application in your browser. The application is designed not to send the contents of your data files to us as part of the normal conversion workflow. Processing behavior may depend on your browser, enabled features, and the version of the application you are using.
+                  </p>
+                  <p>
+                    You are responsible for checking the contents of your files and avoiding the use of sensitive or confidential information unless you have determined that the service is appropriate for that information.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">2. Website and Technical Information</h3>
+                  <p>
+                    The website hosting provider or infrastructure may automatically process limited technical information when you access the site. This may include IP address, browser and device information, requested pages, timestamps, and security or diagnostic logs. Such information is generally used to deliver, maintain, and protect the website.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">3. Cookies and Local Storage</h3>
+                  <p>
+                    The application may use browser storage or similar technologies for essential interface preferences or functionality. We do not claim that the hosting platform or future integrations never use cookies or other technical storage. You can manage browser storage and cookie settings through your browser.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">4. Third-Party Services</h3>
+                  <p>
+                    The website may rely on third-party hosting, libraries, or external links. Those providers operate under their own privacy policies and terms. When you follow an external link, your interaction is governed by the destination website's policies. We do not control third-party data practices.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">5. Data Retention and Security</h3>
+                  <p>
+                    The application does not provide an account-based file storage service. Files processed in the browser remain subject to your browser session and device behavior. Technical logs held by hosting providers may be retained according to their own policies.
+                  </p>
+                  <p>
+                    No website or data transmission method can be guaranteed completely secure. Keep your own copies of important files and use appropriate device security practices.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">6. Children's Privacy</h3>
+                  <p>
+                    This service is not specifically directed at children. We do not knowingly request personal information from children through the conversion interface.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">7. Policy Updates</h3>
+                  <p>
+                    This policy may be updated as the application, infrastructure, or applicable requirements change. The latest version will be published on this page with an updated effective date.
+                  </p>
+                </section>
+
+                <p>
+                  For project information, visit the <a href="https://github.com/newddf/" target="_blank" rel="noopener noreferrer" className="text-[#ff6be4] underline">project maintainer's GitHub profile</a>.
                 </p>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-4 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                 <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-lg">
                   <Lock className="w-5 h-5 text-[#ff6be4]" />
                   <h2>Terms of Service</h2>
                 </div>
-                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                  Effective Date: October 2026<br /><br />
-                  NPC-DateConverter is provided free of charge as an open utility tool. By using this platform, you agree to use it responsibly. Maintained via <a href="https://GitHub.com/newddf/" target="_blank" className="text-[#ff6be4] underline">GitHub.com/newddf/</a>.
+                <p>Effective Date: November 1, 2026</p>
+                <p>
+                  By accessing or using this data conversion service, you agree to these Terms of Service. If you do not agree, please discontinue use of the service.
+                </p>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">1. Service Description</h3>
+                  <p>
+                    This project provides browser-based tools for parsing, previewing, and converting supported data formats. Features, supported formats, and behavior may change as the project develops.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">2. Acceptable Use</h3>
+                  <p>
+                    You agree to use the service lawfully and responsibly. You must not use it to violate applicable laws, infringe the rights of others, interfere with the website, attempt unauthorized access, or distribute malicious content.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">3. Your Data and Responsibilities</h3>
+                  <p>
+                    You retain responsibility for the data and files you submit to the application. You must have the necessary rights and permissions to use that content. Always review conversion results for completeness, formatting, and accuracy before relying on them.
+                  </p>
+                  <p>
+                    You are responsible for maintaining independent backups of important source files and converted results. Do not treat this service as your sole data storage or backup solution.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">4. No Professional Advice</h3>
+                  <p>
+                    Conversion results are provided as a technical convenience and are not professional, legal, financial, or other specialized advice. You should independently verify results before using them in business-critical, regulated, or other high-impact workflows.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">5. Intellectual Property</h3>
+                  <p>
+                    The website's original design, code, and branding are protected by applicable intellectual property laws. Third-party libraries and components remain subject to their respective licenses. These terms do not transfer ownership of your input data to the project maintainer.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">6. Availability and Changes</h3>
+                  <p>
+                    The service is provided free of charge and may be modified, suspended, or discontinued at any time. We do not guarantee uninterrupted availability, compatibility with every file, or continued support for any particular feature.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">7. Disclaimer of Warranties</h3>
+                  <p>
+                    To the extent permitted by applicable law, the service is provided "as is" and "as available", without warranties of any kind, whether express or implied. We do not warrant that the service will be error-free, secure, or suitable for every purpose.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">8. Limitation of Liability</h3>
+                  <p>
+                    To the extent permitted by applicable law, the project maintainer shall not be liable for indirect, incidental, special, consequential, or punitive damages, or for loss of data, profits, or business arising from or related to the use or inability to use the service.
+                  </p>
+                </section>
+
+                <section className="space-y-1">
+                  <h3 className="font-bold text-slate-900 dark:text-white">9. Changes to These Terms</h3>
+                  <p>
+                    These terms may be revised as the service evolves. Continued use of the service after updated terms are published constitutes acceptance of the revised terms to the extent permitted by applicable law.
+                  </p>
+                </section>
+
+                <p>
+                  This project is maintained independently. Visit <a href="https://github.com/newddf/" target="_blank" rel="noopener noreferrer" className="text-[#ff6be4] underline">GitHub.com/newddf</a> for project information.
                 </p>
               </div>
             )}
