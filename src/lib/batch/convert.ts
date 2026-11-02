@@ -1,0 +1,62 @@
+import type { DataFormat } from '@/types/converter';
+import {
+  parseTextData,
+  parseExcelBuffer,
+  serializeRows,
+  createExcelBlob,
+} from '@/utils/parsers';
+
+const EXTENSION_FORMATS: Record<string, DataFormat> = {
+  json: 'json',
+  csv: 'csv',
+  xml: 'xml',
+  yaml: 'yaml',
+  yml: 'yaml',
+  md: 'md',
+  xlsx: 'excel',
+  xls: 'excel',
+};
+
+export const getBatchSourceFormat = (fileName: string): DataFormat | null => {
+  const extension = fileName.split('.').pop()?.toLowerCase() ?? '';
+  return EXTENSION_FORMATS[extension] ?? null;
+};
+
+export const readBatchSource = async (
+  file: File,
+  format: DataFormat
+): Promise<{ rows: Record<string, unknown>[]; preview: string }> => {
+  if (format === 'excel') {
+    const rows = parseExcelBuffer(await file.arrayBuffer());
+    return {
+      rows,
+      preview: JSON.stringify(rows.slice(0, 20), null, 2),
+    };
+  }
+
+  const text = await file.text();
+  return {
+    rows: parseTextData(text, format),
+    preview: text.slice(0, 30000),
+  };
+};
+
+export const convertBatchRows = (
+  rows: Record<string, unknown>[],
+  format: DataFormat
+): { text: string; blob: Blob | null } => {
+  if (format === 'excel') {
+    return {
+      text: `Excel workbook ready. ${rows.length} record(s) will be exported.`,
+      blob: createExcelBlob(rows),
+    };
+  }
+
+  return {
+    text: serializeRows(rows, format),
+    blob: null,
+  };
+};
+
+export const getBatchOutputExtension = (format: DataFormat): string =>
+  format === 'excel' ? 'xlsx' : format;
