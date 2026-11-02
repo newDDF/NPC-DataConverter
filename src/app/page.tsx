@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import CodePreview from '@/components/CodePreview';
 import { detectFormat, parseTextData, parseExcelBuffer, serializeRows, createExcelBlob } from '@/utils/parsers';
 import { 
   ArrowRightLeft, 
@@ -117,7 +118,7 @@ const renderDataTable = (
 ) => {
   if (rows.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-slate-300 dark:border-slate-700 p-6 text-center text-xs text-slate-500 dark:text-slate-400">
+      <div className="flex flex-1 min-h-0 items-center justify-center rounded-xl border border-dashed border-slate-300 dark:border-slate-700 p-6 text-center text-xs text-slate-500 dark:text-slate-400">
         {emptyMessage}
       </div>
     );
@@ -129,7 +130,7 @@ const renderDataTable = (
 
   if (columns.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center text-xs text-slate-500">
+      <div className="flex flex-1 min-h-0 items-center justify-center text-xs text-slate-500">
         No tabular fields found.
       </div>
     );
@@ -144,39 +145,44 @@ const renderDataTable = (
   };
 
   return (
-    <div className="flex-1 min-h-0 overflow-auto rounded-xl border border-slate-200 dark:border-slate-800">
-      <table className="min-w-full border-collapse text-left text-xs">
-        <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800">
-          <tr>
-            {columns.map((column) => (
-              <th
-                key={column}
-                className="whitespace-nowrap border-b border-slate-200 dark:border-slate-700 px-3 py-2 font-semibold text-slate-700 dark:text-slate-200"
-              >
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr
-              key={rowIndex}
-              className="border-b border-slate-100 dark:border-slate-800 last:border-0 hover:bg-slate-50 dark:hover:bg-slate-800/60"
-            >
+    <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
+      <div className="flex-1 min-h-0 min-w-0 overflow-auto overscroll-contain">
+        <table className="w-max min-w-full table-auto border-collapse text-left text-xs">
+          <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800">
+            <tr>
               {columns.map((column) => (
-                <td
+                <th
                   key={column}
-                  className="max-w-xs whitespace-pre-wrap break-words px-3 py-2 align-top text-slate-600 dark:text-slate-300"
+                  className="w-[220px] min-w-[180px] max-w-[260px] whitespace-normal break-words border-b border-slate-200 dark:border-slate-700 px-3 py-2 font-semibold text-slate-700 dark:text-slate-200"
                 >
-                  {formatCell(row[column])}
-                </td>
+                  {column}
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 px-3 py-2 text-[11px] text-slate-500 dark:text-slate-400">
+          </thead>
+          <tbody>
+            {rows.map((row, rowIndex) => (
+              <tr
+                key={rowIndex}
+                className="border-b border-slate-100 dark:border-slate-800 last:border-0 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+              >
+                {columns.map((column) => (
+                  <td
+                    key={column}
+                    className="w-[220px] min-w-[180px] max-w-[260px] border-b border-slate-100 dark:border-slate-800 px-3 py-2 align-top text-slate-600 dark:text-slate-300"
+                  >
+                    <div className="max-h-24 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                      {formatCell(row[column])}
+                    </div>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="shrink-0 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 px-3 py-2 text-[11px] text-slate-500 dark:text-slate-400">
         {rows.length} record(s) · {columns.length} field(s)
       </div>
     </div>
@@ -218,6 +224,41 @@ export default function App() {
 
 
   const activeInputFormat = inputFormat === 'auto' ? detectedFormat : inputFormat;
+
+  const handleFileUpload = async (file: File) => {
+    const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+    const formats: Record<string, DataFormat> = {
+      json: 'json',
+      csv: 'csv',
+      xml: 'xml',
+      yaml: 'yaml',
+      yml: 'yaml',
+      md: 'md',
+    };
+
+    const supportedExtensions = [...Object.keys(formats), 'xlsx', 'xls'];
+
+    if (!supportedExtensions.includes(extension)) {
+      setOutputData(`File import error: Unsupported file type ".${extension}".`);
+      return;
+    }
+
+    try {
+      if (extension === 'xlsx' || extension === 'xls') {
+        const buffer = await file.arrayBuffer();
+        const rows = parseExcelBuffer(buffer);
+        setInputData(JSON.stringify(rows, null, 2));
+        setInputFormat('json');
+      } else {
+        const text = await file.text();
+        setInputData(text);
+        setInputFormat(formats[extension]);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to read file';
+      setOutputData(`File import error: ${message}`);
+    }
+  };
 
   useEffect(() => {
     if (inputFormat === 'auto') {
@@ -699,7 +740,18 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="border-b border-dashed border-slate-200 dark:border-slate-800 p-3 text-center bg-slate-50/30 dark:bg-slate-900/30">
+              <div
+                className="border-b border-dashed border-slate-200 dark:border-slate-800 p-3 text-center bg-slate-50/30 dark:bg-slate-900/30"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'copy';
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) void handleFileUpload(file);
+                }}
+              >
                 <div className="flex items-center justify-center space-x-2 text-xs text-slate-500 dark:text-slate-400">
                   <Upload className="w-3.5 h-3.5 text-[#ff6be4]" />
                   <span>Drag & drop file here or</span>
@@ -708,38 +760,12 @@ export default function App() {
                     <input
                       type="file"
                       accept=".json,.csv,.xml,.yaml,.yml,.md,.xlsx,.xls"
-                      onChange={async (e) => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
+                      onChange={(e) => {
+                        const input = e.currentTarget;
+                        const file = input.files?.[0];
 
-                        try {
-                          const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
-
-                          if (extension === 'xlsx' || extension === 'xls') {
-                            const buffer = await file.arrayBuffer();
-                            const rows = parseExcelBuffer(buffer);
-                            setInputData(JSON.stringify(rows, null, 2));
-                            setInputFormat('json');
-                          } else {
-                            const text = await file.text();
-                            const formats: Record<string, DataFormat> = {
-                              json: 'json',
-                              csv: 'csv',
-                              xml: 'xml',
-                              yaml: 'yaml',
-                              yml: 'yaml',
-                              md: 'md',
-                            };
-
-                            setInputData(text);
-                            setInputFormat(formats[extension] ?? 'auto');
-                          }
-                        } catch (error) {
-                          const message = error instanceof Error ? error.message : 'Unable to read file';
-                          setOutputData(`File import error: ${message}`);
-                        } finally {
-                          e.target.value = '';
-                        }
+                        if (file) void handleFileUpload(file);
+                        input.value = '';
                       }}
                       className="hidden"
                     />
@@ -747,13 +773,14 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="p-4 flex-1 flex flex-col">
+              <div className="p-4 flex-1 min-h-0 min-w-0 flex flex-col">
                 {inputViewMode === 'code' ? (
-                  <textarea
+                  <CodePreview
                     value={inputData}
-                    onChange={(e) => setInputData(e.target.value)}
+                    language={activeInputFormat}
+                    editable
+                    onChange={setInputData}
                     placeholder="Paste or type your source data here..."
-                    className="w-full flex-1 font-mono text-xs p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#ff6be4] resize-none"
                   />
                 ) : (
                   renderDataTable(
@@ -787,13 +814,12 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="p-4 flex-1 flex flex-col">
+              <div className="p-4 flex-1 min-h-0 min-w-0 flex flex-col">
                 {outputViewMode === 'code' ? (
-                  <textarea
-                    readOnly
+                  <CodePreview
                     value={outputData}
+                    language={outputFormat}
                     placeholder="Converted output will appear here in real-time..."
-                    className="w-full flex-1 font-mono text-xs p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none resize-none"
                   />
                 ) : (
                   renderDataTable(
