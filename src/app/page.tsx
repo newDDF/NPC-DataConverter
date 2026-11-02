@@ -2,6 +2,17 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import CodePreview from '@/components/CodePreview';
+import { useBatchTasks } from '@/hooks/useBatchTasks';
+import { readBatchSource, convertBatchRows } from '@/lib/batch/convert';
+import JsonFieldManager from '@/components/JsonFieldManager';
+import {
+  buildJsonFieldTree,
+  createJsonFieldSelection,
+  filterJsonRows,
+  type JsonFieldNode,
+  type JsonFieldSelection,
+} from '@/lib/json-fields';
+import { BatchInputPanel, BatchOutputPanel } from '@/components/batch/BatchPanels';
 import { detectFormat, parseTextData, parseExcelBuffer, serializeRows, createExcelBlob } from '@/utils/parsers';
 import { 
   ArrowRightLeft, 
@@ -191,6 +202,9 @@ const renderDataTable = (
 
 export default function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const batch = useBatchTasks();
+  const [inputBatchOpen, setInputBatchOpen] = useState(false);
+  const [outputBatchOpen, setOutputBatchOpen] = useState(false);
   const [inputFormat, setInputFormat] = useState<InputFormatOption>('auto');
   const [detectedFormat, setDetectedFormat] = useState<DataFormat>('json');
   const [outputFormat, setOutputFormat] = useState<DataFormat>('json');
@@ -203,6 +217,8 @@ export default function App() {
 
   const [availableFields, setAvailableFields] = useState<string[]>([]);
   const [selectedFields, setSelectedFields] = useState<string[]>([]);
+  const [jsonFieldTree, setJsonFieldTree] = useState<JsonFieldNode[]>([]);
+  const [jsonFieldSelection, setJsonFieldSelection] = useState<JsonFieldSelection>({});
   const [fieldSearchTerm, setFieldSearchTerm] = useState('');
   const [activeModal, setActiveModal] = useState<'privacy' | 'terms' | null>(null);
 
@@ -224,6 +240,99 @@ export default function App() {
 
 
   const activeInputFormat = inputFormat === 'auto' ? detectedFormat : inputFormat;
+
+  const [batchPreview, setBatchPreview] = useState('');
+
+  useEffect(() => {
+    const task = batch.activeTask;
+
+    if (!task) {
+      setBatchPreview('');
+      return;
+    }
+
+    if (task.status === 'completed') {
+      setBatchPreview(task.outputText);
+      return;
+    }
+
+    if (task.status === 'processing') {
+      setBatchPreview('Conversion in progress...');
+      return;
+    }
+
+    if (!task.sourceFormat) {
+      setBatchPreview('Preview unavailable: unsupported source format.');
+      return;
+    }
+
+    let cancelled = false;
+    setBatchPreview('Generating conversion preview...');
+
+    const generatePreview = async () => {
+      try {
+        const source = await readBatchSource(task.file, task.sourceFormat!);
+        const result = convertBatchRows(source.rows, outputFormat);
+
+        if (!cancelled) {
+          setBatchPreview(result.text);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setBatchPreview(
+            `Preview error: ${error instanceof Error ? error.message : 'Unable to preview this file.'}`
+          );
+        }
+      }
+    };
+
+    void generatePreview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    batch.activeTask?.id,
+    batch.activeTask?.status,
+    batch.activeTask?.outputText,
+    batch.activeTask?.sourceFormat,
+    outputFormat,
+  ]);
+
+  useEffect(() => {
+    const task = batch.activeTask;
+    if (!task) return;
+
+    if (task.sourceData !== undefined) {
+      setInputData(task.sourceData);
+      const sourceFormat = task.sourceFormat === 'excel' ? 'json' : task.sourceFormat;
+      if (sourceFormat) {
+        setInputFormat(sourceFormat);
+        setDetectedFormat(sourceFormat);
+      }
+    }
+
+    setOutputData(task.outputText || '');
+    setOutputBlob(task.outputBlob);
+    setRecordCount(task.recordCount);
+    if (task.outputFormat) setOutputFormat(task.outputFormat);
+
+    if (task.outputText && task.outputFormat) {
+      try {
+        setConvertedRows(parseTextData(task.outputText, task.outputFormat));
+      } catch {
+        setConvertedRows([]);
+      }
+    } else {
+      setConvertedRows([]);
+    }
+  }, [
+    batch.activeTask?.id,
+    batch.activeTask?.sourceData,
+    batch.activeTask?.outputText,
+    batch.activeTask?.outputFormat,
+  ]);
+
 
   const handleFileUpload = async (file: File) => {
     const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
@@ -284,6 +393,24 @@ export default function App() {
   useEffect(() => {
     try {
       const rows = parseRawToJS(inputData, activeInputFormat);
+
+      if (activeInputFormat === 'json') {
+        const tree = buildJsonFieldTree(rows);
+        setJsonFieldTree(tree);
+        setJsonFieldSelection((previous) => {
+          const next = createJsonFieldSelection(tree);
+          Object.keys(next).forEach((path) => {
+            if (Object.prototype.hasOwnProperty.call(previous, path)) {
+              next[path] = previous[path];
+            }
+          });
+          return next;
+        });
+      } else {
+        setJsonFieldTree([]);
+        setJsonFieldSelection({});
+      }
+
       if (rows && rows.length > 0) {
         const keysSet = new Set<string>();
         rows.forEach((row) => {
@@ -299,14 +426,24 @@ export default function App() {
           }
           return prev;
         });
+      } else {
+        setAvailableFields([]);
+        setSelectedFields([]);
       }
     } catch {
       setAvailableFields([]);
       setSelectedFields([]);
+      setJsonFieldTree([]);
+      setJsonFieldSelection({});
     }
   }, [inputData, activeInputFormat, parseRawToJS]);
 
   const handleConvert = () => {
+    if (inputBatchOpen && batch.tasks.length > 0) {
+      void batch.startAll(outputFormat);
+      return;
+    }
+
     try {
       const rows = parseRawToJS(inputData, activeInputFormat);
       setRecordCount(rows.length);
@@ -317,15 +454,17 @@ export default function App() {
           ? availableFields
           : Object.keys(rows[0] ?? {});
 
-      const filtered = rows.map((row) => {
-        const result: Record<string, any> = {};
-        fields.forEach((field) => {
-          if (Object.prototype.hasOwnProperty.call(row, field)) {
-            result[field] = row[field];
-          }
-        });
-        return result;
-      });
+      const filtered = activeInputFormat === 'json' && outputFormat === 'json'
+        ? filterJsonRows(rows, jsonFieldTree, jsonFieldSelection)
+        : rows.map((row) => {
+            const result: Record<string, any> = {};
+            fields.forEach((field) => {
+              if (Object.prototype.hasOwnProperty.call(row, field)) {
+                result[field] = row[field];
+              }
+            });
+            return result;
+          });
 
       setConvertedRows(filtered);
 
@@ -336,7 +475,13 @@ export default function App() {
         );
       } else {
         setOutputBlob(null);
-        setOutputData(serializeRows(filtered, outputFormat, fields));
+        setOutputData(serializeRows(
+          filtered,
+          outputFormat,
+          activeInputFormat === 'json' && outputFormat === 'json'
+            ? Object.keys(filtered[0] ?? {})
+            : fields
+        ));
       }
     } catch (error) {
       setOutputBlob(null);
@@ -348,8 +493,9 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (batch.activeTaskId) return;
     handleConvert();
-  }, [inputData, activeInputFormat, outputFormat, selectedFields, availableFields, parseRawToJS]);
+  }, [inputData, activeInputFormat, outputFormat, selectedFields, availableFields, jsonFieldTree, jsonFieldSelection, parseRawToJS, batch.activeTaskId]);
 
   const handleCopy = async () => {
     if (!outputData || outputFormat === 'excel') return;
@@ -523,7 +669,13 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Layout 3:9 ratio */}
+      {/* Workspace Mode Switch */}
+      <div className="mx-auto flex w-full max-w-[1700px] items-center justify-center px-4 pt-4 sm:px-6">
+  
+      </div>
+
+      {true ? (
+      /* Main Layout 3:9 ratio */
       <main className="flex-1 max-w-[1700px] w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
         
         {/* Left Sidebar (3 Cols) */}
@@ -580,8 +732,17 @@ export default function App() {
             </div>
           </div>
 
-          {/* Fields Selection & Drag Reorder Card */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm space-y-3 min-h-0 flex flex-col">
+          {/* Fields Selection */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm space-y-3 min-h-0 flex flex-col overflow-hidden">
+            {activeInputFormat === 'json' && outputFormat === 'json' ? (
+              <JsonFieldManager
+                nodes={jsonFieldTree}
+                selection={jsonFieldSelection}
+                onSelectionChange={setJsonFieldSelection}
+                onNodesChange={setJsonFieldTree}
+              />
+            ) : (
+              <>
             <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center space-x-1.5">
                 <ListFilter className="w-4 h-4 text-[#ff6be4]" />
@@ -619,7 +780,7 @@ export default function App() {
             </div>
 
             <div
-              className="relative flex flex-col gap-1.5 max-h-64 overflow-y-auto p-0.5"
+              className="relative flex-1 min-h-0 flex flex-col gap-1.5 overflow-y-auto overscroll-contain p-0.5"
               onPointerMove={handleFieldPointerMove}
               onPointerUp={handleFieldPointerUp}
               onPointerCancel={() => setActiveDrag(null)}
@@ -676,11 +837,13 @@ export default function App() {
                 </div>
               )}
             </div>
+              </>
+            )}
           </div>
         </aside>
 
         {/* Right Main Content (9 Cols) */}
-        <section className="lg:col-span-9 flex flex-col space-y-6">
+        <section className="lg:col-span-9 flex flex-col space-y-6 min-h-0 lg:h-full">
           
           {/* Quick Samples & Actions */}
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-wrap items-center justify-between gap-4">
@@ -715,10 +878,10 @@ export default function App() {
           </div>
 
           {/* Dual Editor Grid */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch flex-1 min-h-0">
             
             {/* Input Data Editor */}
-            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col overflow-hidden h-[620px]">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col overflow-hidden min-h-[420px] lg:h-full">
               <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50">
                 <div className="flex items-center space-x-2">
                   <FileCode className="w-4 h-4 text-[#ff6be4]" />
@@ -741,30 +904,42 @@ export default function App() {
               </div>
 
               <div
-                className="border-b border-dashed border-slate-200 dark:border-slate-800 p-3 text-center bg-slate-50/30 dark:bg-slate-900/30"
+                className="mx-3 my-3 border border-dashed border-slate-300 dark:border-slate-700 rounded-xl p-3 text-center bg-slate-50/30 dark:bg-slate-900/30 hover:border-[#ff6be4] transition-colors"
                 onDragOver={(e) => {
                   e.preventDefault();
                   e.dataTransfer.dropEffect = 'copy';
                 }}
                 onDrop={(e) => {
                   e.preventDefault();
-                  const file = e.dataTransfer.files?.[0];
-                  if (file) void handleFileUpload(file);
+                  const files = Array.from(e.dataTransfer.files);
+                  if (files.length > 1 || inputBatchOpen) {
+                    setInputBatchOpen(true);
+                    batch.addFiles(files);
+                  } else if (files[0]) {
+                    void handleFileUpload(files[0]);
+                  }
                 }}
               >
                 <div className="flex items-center justify-center space-x-2 text-xs text-slate-500 dark:text-slate-400">
                   <Upload className="w-3.5 h-3.5 text-[#ff6be4]" />
-                  <span>Drag & drop file here or</span>
+                  <span>{inputBatchOpen ? 'Drop files here or' : 'Drag & drop file here or'}</span>
                   <label className="text-[#ff6be4] font-semibold cursor-pointer hover:underline">
-                    browse file
+                    {inputBatchOpen ? 'browse files' : 'browse file'}
                     <input
                       type="file"
+                      multiple
                       accept=".json,.csv,.xml,.yaml,.yml,.md,.xlsx,.xls"
                       onChange={(e) => {
                         const input = e.currentTarget;
-                        const file = input.files?.[0];
-
-                        if (file) void handleFileUpload(file);
+                        const files = input.files;
+                        if (files?.length) {
+                          if (files.length > 1 || inputBatchOpen) {
+                            setInputBatchOpen(true);
+                            batch.addFiles(files);
+                          } else {
+                            void handleFileUpload(files[0]);
+                          }
+                        }
                         input.value = '';
                       }}
                       className="hidden"
@@ -772,6 +947,19 @@ export default function App() {
                   </label>
                 </div>
               </div>
+
+              <BatchInputPanel
+                open={inputBatchOpen}
+                onToggle={() => setInputBatchOpen((value) => !value)}
+                tasks={batch.tasks}
+                activeTaskId={batch.activeTaskId}
+                onSelect={batch.selectTask}
+                onRemove={batch.removeTask}
+                completedCount={batch.completedCount}
+                onClearCompleted={batch.clearCompleted}
+              />
+
+              
 
               <div className="p-4 flex-1 min-h-0 min-w-0 flex flex-col">
                 {inputViewMode === 'code' ? (
@@ -792,7 +980,7 @@ export default function App() {
             </div>
 
             {/* Converted Output Editor */}
-            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col overflow-hidden h-[620px]">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col overflow-hidden min-h-[420px] lg:h-full">
               <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50">
                 <div className="flex items-center space-x-2">
                   <FileText className="w-4 h-4 text-[#ff6be4]" />
@@ -814,11 +1002,29 @@ export default function App() {
                 </div>
               </div>
 
+              <BatchOutputPanel
+                open={outputBatchOpen}
+                onToggle={() => setOutputBatchOpen((value) => !value)}
+                tasks={batch.tasks}
+                activeTaskId={batch.activeTaskId}
+                onSelect={batch.selectTask}
+                onRemove={batch.removeTask}
+                onDownload={batch.downloadTask}
+              />
+
+              
+
               <div className="p-4 flex-1 min-h-0 min-w-0 flex flex-col">
                 {outputViewMode === 'code' ? (
                   <CodePreview
-                    value={outputData}
-                    language={outputFormat}
+                    value={batch.activeTaskId
+                      ? batch.activeTask?.status === 'completed'
+                        ? batch.activeTask.outputText
+                        : batch.activeTask?.status === 'failed'
+                          ? `Conversion failed: ${batch.activeTask.error}`
+                          : batchPreview
+                      : outputData}
+                    language={batch.activeTask?.outputFormat ?? outputFormat}
                     placeholder="Converted output will appear here in real-time..."
                   />
                 ) : (
@@ -833,7 +1039,7 @@ export default function App() {
 
               <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 flex items-center justify-between flex-wrap gap-3">
                 <div className="text-xs text-slate-500 dark:text-slate-400">
-                  Records: <span className="font-semibold text-slate-700 dark:text-slate-300">{recordCount}</span> · Fields: <span className="font-semibold text-slate-700 dark:text-slate-300">{selectedFields.length}</span>
+                  Records: <span className="font-semibold text-slate-700 dark:text-slate-300">{batch.activeTaskId ? (batch.activeTask?.recordCount ?? 0) : recordCount}</span> · Fields: <span className="font-semibold text-slate-700 dark:text-slate-300">{selectedFields.length}</span>
                 </div>
 
                 <div className="flex items-center space-x-2">
@@ -861,6 +1067,8 @@ export default function App() {
         </section>
 
       </main>
+      ) : null}
+      
 
       {/* Footer */}
       <footer className="border-t border-slate-200 dark:border-slate-800/80 bg-white/50 dark:bg-slate-950/50 py-4 px-6 mt-auto">
