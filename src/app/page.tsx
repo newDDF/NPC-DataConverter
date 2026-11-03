@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import CodePreview from '@/components/CodePreview';
 import { useBatchTasks } from '@/hooks/useBatchTasks';
-import { readBatchSource, convertBatchRows } from '@/lib/batch/convert';
+import { readBatchSource, convertBatchRows, getBatchOutputExtension } from '@/lib/batch/convert';
+import JSZip from 'jszip';
 import JsonFieldManager from '@/components/JsonFieldManager';
 import {
   buildJsonFieldTree,
@@ -14,6 +15,7 @@ import {
 } from '@/lib/json-fields';
 import { BatchInputPanel, BatchOutputPanel } from '@/components/batch/BatchPanels';
 import { detectFormat, parseTextData, parseExcelBuffer, serializeRows, createExcelBlob } from '@/utils/parsers';
+import { serializeSQL, serializeSQLFormatted } from '@/utils/sql';
 import { 
   ArrowRightLeft, 
   Copy, 
@@ -38,8 +40,7 @@ import {
   FileSpreadsheet
 } from 'lucide-react';
 
-type DataFormat = 'json' | 'csv' | 'excel' | 'xml' | 'yaml' | 'md';
-type InputFormatOption = 'auto' | DataFormat;
+import type { DataFormat, InputFormatOption } from '@/types/converter';
 
 const SAMPLES: Record<string, { name: string; format: DataFormat; data: string }> = {
   users: {
@@ -204,12 +205,14 @@ export default function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const batch = useBatchTasks();
   const [inputBatchOpen, setInputBatchOpen] = useState(false);
+  const [previewMode, setPreviewMode] = useState<'single' | 'batch'>('single');
   const [outputBatchOpen, setOutputBatchOpen] = useState(false);
   const [inputFormat, setInputFormat] = useState<InputFormatOption>('auto');
   const [detectedFormat, setDetectedFormat] = useState<DataFormat>('json');
   const [outputFormat, setOutputFormat] = useState<DataFormat>('json');
   const [inputData, setInputData] = useState(SAMPLES.users.data);
   const [outputData, setOutputData] = useState('');
+  const [sqlTableName, setSqlTableName] = useState('data');
   const [outputBlob, setOutputBlob] = useState<Blob | null>(null);
   const [recordCount, setRecordCount] = useState(0);
   const [convertedRows, setConvertedRows] = useState<Record<string, any>[]>([]);
@@ -242,8 +245,11 @@ export default function App() {
   const activeInputFormat = inputFormat === 'auto' ? detectedFormat : inputFormat;
 
   const [batchPreview, setBatchPreview] = useState('');
+  const [batchSqlTableName, setBatchSqlTableName] = useState('data');
 
   useEffect(() => {
+    if (previewMode !== 'batch') return;
+
     const task = batch.activeTask;
 
     if (!task) {
@@ -251,13 +257,13 @@ export default function App() {
       return;
     }
 
-    if (task.status === 'completed') {
-      setBatchPreview(task.outputText);
+    if (task.status === 'processing') {
+      setBatchPreview('Conversion in progress...');
       return;
     }
 
-    if (task.status === 'processing') {
-      setBatchPreview('Conversion in progress...');
+    if (task.status === 'completed' && task.outputText) {
+      setBatchPreview(task.outputText);
       return;
     }
 
@@ -272,7 +278,8 @@ export default function App() {
     const generatePreview = async () => {
       try {
         const source = await readBatchSource(task.file, task.sourceFormat!);
-        const result = convertBatchRows(source.rows, outputFormat);
+
+        const result = convertBatchRows(source.rows, outputFormat, selectedFields, batchSqlTableName);
 
         if (!cancelled) {
           setBatchPreview(result.text);
@@ -297,9 +304,14 @@ export default function App() {
     batch.activeTask?.outputText,
     batch.activeTask?.sourceFormat,
     outputFormat,
+    selectedFields,
+    availableFields,
+    batchSqlTableName,
+    previewMode,
   ]);
 
   useEffect(() => {
+    if (previewMode !== 'batch') return;
     const task = batch.activeTask;
     if (!task) return;
 
@@ -343,6 +355,7 @@ export default function App() {
       yaml: 'yaml',
       yml: 'yaml',
       md: 'md',
+      sql: 'sql',
     };
 
     const supportedExtensions = [...Object.keys(formats), 'xlsx', 'xls'];
@@ -439,8 +452,8 @@ export default function App() {
   }, [inputData, activeInputFormat, parseRawToJS]);
 
   const handleConvert = () => {
-    if (inputBatchOpen && batch.tasks.length > 0) {
-      void batch.startAll(outputFormat);
+    if (previewMode === 'batch' && inputBatchOpen && batch.tasks.length > 0) {
+      void batch.startAll(outputFormat, selectedFields, batchSqlTableName);
       return;
     }
 
@@ -448,11 +461,7 @@ export default function App() {
       const rows = parseRawToJS(inputData, activeInputFormat);
       setRecordCount(rows.length);
 
-      const fields = selectedFields.length > 0
-        ? selectedFields
-        : availableFields.length > 0
-          ? availableFields
-          : Object.keys(rows[0] ?? {});
+      const fields = selectedFields;
 
       const filtered = activeInputFormat === 'json' && outputFormat === 'json'
         ? filterJsonRows(rows, jsonFieldTree, jsonFieldSelection)
@@ -475,13 +484,17 @@ export default function App() {
         );
       } else {
         setOutputBlob(null);
-        setOutputData(serializeRows(
-          filtered,
-          outputFormat,
-          activeInputFormat === 'json' && outputFormat === 'json'
-            ? Object.keys(filtered[0] ?? {})
-            : fields
-        ));
+        setOutputData(
+          outputFormat === 'sql'
+            ? serializeSQL(filtered, fields, sqlTableName)
+            : serializeRows(
+                filtered,
+                outputFormat,
+                activeInputFormat === 'json' && outputFormat === 'json'
+                  ? Object.keys(filtered[0] ?? {})
+                  : fields
+              )
+        );
       }
     } catch (error) {
       setOutputBlob(null);
@@ -493,9 +506,9 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (batch.activeTaskId) return;
+    if (previewMode !== 'single') return;
     handleConvert();
-  }, [inputData, activeInputFormat, outputFormat, selectedFields, availableFields, jsonFieldTree, jsonFieldSelection, parseRawToJS, batch.activeTaskId]);
+  }, [previewMode, inputData, activeInputFormat, outputFormat, selectedFields, availableFields, jsonFieldTree, jsonFieldSelection, parseRawToJS, sqlTableName]);
 
   const handleCopy = async () => {
     if (!outputData || outputFormat === 'excel') return;
@@ -509,7 +522,47 @@ export default function App() {
     }
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
+    if (previewMode === 'batch') {
+      const completedTasks = batch.tasks.filter(
+        (task) => task.status === 'completed' && task.outputFormat
+      );
+
+      if (completedTasks.length === 0) return;
+
+      const zip = new JSZip();
+      const filenameCounts = new Map<string, number>();
+
+      for (const task of completedTasks) {
+        const originalBase = task.name.replace(/\.[^.]+$/, '');
+        const extension = getBatchOutputExtension(task.outputFormat!);
+        const count = (filenameCounts.get(originalBase) ?? 0) + 1;
+        filenameCounts.set(originalBase, count);
+
+        const suffix = count > 1 ? ` (${count})` : '';
+        const filename = `${originalBase}${suffix}.${extension}`;
+        const blob = task.outputBlob ?? new Blob(
+          [task.outputText],
+          { type: 'text/plain;charset=utf-8' }
+        );
+
+        zip.file(filename, blob);
+      }
+
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(zipBlob);
+      const anchor = document.createElement('a');
+
+      anchor.href = url;
+      anchor.download = 'converted_files.zip';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return;
+    }
+
     if (!outputData) return;
 
     const isExcel = outputFormat === 'excel';
@@ -599,7 +652,7 @@ export default function App() {
   const filteredFields = availableFields.filter(f => f.toLowerCase().includes(fieldSearchTerm.toLowerCase()));
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans selection:bg-[#ff6be4] selection:text-white">
+    <div className="min-h-screen lg:h-dvh lg:min-h-0 lg:overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans selection:bg-[#ff6be4] selection:text-white">
       
       {/* Custom Scrollbar Styles */}
       <style jsx global>{`
@@ -628,7 +681,7 @@ export default function App() {
       `}</style>
 
       {/* Top Header */}
-      <header className="sticky top-0 z-30 border-b border-slate-200 dark:border-slate-800/80 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md">
+      <header className="shrink-0 sticky top-0 z-30 border-b border-slate-200 dark:border-slate-800/80 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md">
         <div className="max-w-[1700px] mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl overflow-hidden shadow-lg shadow-[#ff6be4]/30 flex items-center justify-center">
@@ -676,7 +729,7 @@ export default function App() {
 
       {true ? (
       /* Main Layout 3:9 ratio */
-      <main className="flex-1 max-w-[1700px] w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+      <main className="flex-1 max-w-[1700px] w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch lg:min-h-0 lg:overflow-hidden">
         
         {/* Left Sidebar (3 Cols) */}
         <aside className="lg:col-span-3 grid grid-rows-[auto_minmax(0,1fr)] gap-5 self-stretch min-h-0">
@@ -685,8 +738,8 @@ export default function App() {
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm space-y-4">
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-2">Source Format</span>
-              <div className="grid grid-cols-3 gap-1.5">
-                {(['auto', 'json', 'csv', 'excel', 'xml', 'yaml', 'md'] as InputFormatOption[]).map((fmt) => (
+              <div className="grid grid-cols-4 gap-1.5">
+                {(['auto', 'json', 'csv', 'excel', 'xml', 'yaml', 'md', 'sql'] as InputFormatOption[]).map((fmt) => (
                   <button
                     key={fmt}
                     onClick={() => setInputFormat(fmt)}
@@ -714,8 +767,8 @@ export default function App() {
 
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-2">Target Format</span>
-              <div className="grid grid-cols-3 gap-1.5">
-                {(['json', 'csv', 'excel', 'xml', 'yaml', 'md'] as DataFormat[]).map((fmt) => (
+              <div className="grid grid-cols-4 gap-1.5">
+                {(['json', 'csv', 'excel', 'xml', 'yaml', 'md', 'sql'] as DataFormat[]).map((fmt) => (
                   <button
                     key={fmt}
                     onClick={() => setOutputFormat(fmt)}
@@ -734,7 +787,9 @@ export default function App() {
 
           {/* Fields Selection */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm space-y-3 min-h-0 flex flex-col overflow-hidden">
-            {activeInputFormat === 'json' && outputFormat === 'json' ? (
+            {previewMode !== 'batch' &&
+            activeInputFormat === 'json' &&
+            outputFormat === 'json' ? (
               <JsonFieldManager
                 nodes={jsonFieldTree}
                 selection={jsonFieldSelection}
@@ -855,6 +910,7 @@ export default function App() {
                 <button
                   key={key}
                   onClick={() => {
+                    setPreviewMode('single');
                     setInputData(SAMPLES[key].data);
                     setInputFormat(SAMPLES[key].format);
                   }}
@@ -866,10 +922,16 @@ export default function App() {
             </div>
             <button
               onClick={() => {
+                setPreviewMode('single');
                 setInputData('');
                 setOutputData('');
+                setOutputBlob(null);
+                setRecordCount(0);
+                setConvertedRows([]);
                 setAvailableFields([]);
                 setSelectedFields([]);
+                setJsonFieldTree([]);
+                setJsonFieldSelection({});
               }}
               className="px-3 py-1.5 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 rounded-lg transition-all border border-rose-200 dark:border-rose-900 flex items-center"
             >
@@ -914,6 +976,7 @@ export default function App() {
                   const files = Array.from(e.dataTransfer.files);
                   if (files.length > 1 || inputBatchOpen) {
                     setInputBatchOpen(true);
+                    setPreviewMode('batch');
                     batch.addFiles(files);
                   } else if (files[0]) {
                     void handleFileUpload(files[0]);
@@ -935,6 +998,7 @@ export default function App() {
                         if (files?.length) {
                           if (files.length > 1 || inputBatchOpen) {
                             setInputBatchOpen(true);
+                            setPreviewMode('batch');
                             batch.addFiles(files);
                           } else {
                             void handleFileUpload(files[0]);
@@ -953,7 +1017,10 @@ export default function App() {
                 onToggle={() => setInputBatchOpen((value) => !value)}
                 tasks={batch.tasks}
                 activeTaskId={batch.activeTaskId}
-                onSelect={batch.selectTask}
+                onSelect={(id) => {
+                  setPreviewMode('batch');
+                  void batch.selectTask(id);
+                }}
                 onRemove={batch.removeTask}
                 completedCount={batch.completedCount}
                 onClearCompleted={batch.clearCompleted}
@@ -1007,7 +1074,10 @@ export default function App() {
                 onToggle={() => setOutputBatchOpen((value) => !value)}
                 tasks={batch.tasks}
                 activeTaskId={batch.activeTaskId}
-                onSelect={batch.selectTask}
+                onSelect={(id) => {
+                  setPreviewMode('batch');
+                  void batch.selectTask(id);
+                }}
                 onRemove={batch.removeTask}
                 onDownload={batch.downloadTask}
               />
@@ -1015,16 +1085,77 @@ export default function App() {
               
 
               <div className="p-4 flex-1 min-h-0 min-w-0 flex flex-col">
+                {previewMode === 'batch' && outputFormat === 'sql' && (
+                  <div className="mb-3 flex flex-wrap items-end gap-2">
+                    <label className="flex-1 min-w-[160px]">
+                      <span className="mb-1 block text-xs font-semibold text-slate-500 dark:text-slate-400">
+                        SQL Table Name
+                      </span>
+                      <input
+                        type="text"
+                        value={batchSqlTableName}
+                        onChange={(event) => setBatchSqlTableName(event.target.value)}
+                        placeholder="data"
+                        className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs text-slate-800 dark:text-slate-200 outline-none focus:border-pink-400"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (batch.activeTask) {
+                          void batch.formatSQLTask(batch.activeTask.id, selectedFields, batchSqlTableName);
+                        }
+                      }}
+                      disabled={!batch.activeTask || batch.activeTask.status !== 'completed'}
+                      className="rounded-lg bg-gradient-to-r from-[#ff6be4] to-rose-500 px-4 py-2 text-xs font-semibold text-white shadow-sm transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Format SQL
+                    </button>
+                  </div>
+                )}
+                {previewMode === 'single' && outputFormat === 'sql' && (
+                  <div className="mb-3 flex flex-wrap items-end gap-2">
+                    <label className="flex-1 min-w-[160px]">
+                      <span className="mb-1 block text-xs font-semibold text-slate-500 dark:text-slate-400">
+                        SQL Table Name
+                      </span>
+                      <input
+                        type="text"
+                        value={sqlTableName}
+                        onChange={(event) => setSqlTableName(event.target.value)}
+                        placeholder="data"
+                        className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs text-slate-800 dark:text-slate-200 outline-none focus:border-pink-400"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        try {
+                          setOutputData(serializeSQLFormatted(convertedRows, selectedFields, sqlTableName));
+                        } catch (error) {
+                          const message = error instanceof Error ? error.message : 'SQL formatting failed';
+                          setOutputData(`Conversion error: ${message}`);
+                        }
+                      }}
+                      disabled={convertedRows.length === 0}
+                      className="rounded-lg bg-gradient-to-r from-[#ff6be4] to-rose-500 px-4 py-2 text-xs font-semibold text-white shadow-sm transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Format SQL
+                    </button>
+                  </div>
+                )}
                 {outputViewMode === 'code' ? (
                   <CodePreview
-                    value={batch.activeTaskId
-                      ? batch.activeTask?.status === 'completed'
-                        ? batch.activeTask.outputText
-                        : batch.activeTask?.status === 'failed'
-                          ? `Conversion failed: ${batch.activeTask.error}`
+                    value={previewMode === 'batch'
+                      ? batch.activeTask?.status === 'failed'
+                        ? `Conversion failed: ${batch.activeTask.error}`
+                        : batch.activeTask?.status === 'processing'
+                          ? 'Conversion in progress...'
                           : batchPreview
                       : outputData}
-                    language={batch.activeTask?.outputFormat ?? outputFormat}
+                    language={previewMode === 'batch'
+                      ? batch.activeTask?.outputFormat ?? outputFormat
+                      : outputFormat}
                     placeholder="Converted output will appear here in real-time..."
                   />
                 ) : (
@@ -1039,7 +1170,7 @@ export default function App() {
 
               <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 flex items-center justify-between flex-wrap gap-3">
                 <div className="text-xs text-slate-500 dark:text-slate-400">
-                  Records: <span className="font-semibold text-slate-700 dark:text-slate-300">{batch.activeTaskId ? (batch.activeTask?.recordCount ?? 0) : recordCount}</span> · Fields: <span className="font-semibold text-slate-700 dark:text-slate-300">{selectedFields.length}</span>
+                  Records: <span className="font-semibold text-slate-700 dark:text-slate-300">{previewMode === 'batch' ? (batch.activeTask?.recordCount ?? 0) : recordCount}</span> · Fields: <span className="font-semibold text-slate-700 dark:text-slate-300">{selectedFields.length}</span>
                 </div>
 
                 <div className="flex items-center space-x-2">
@@ -1053,7 +1184,9 @@ export default function App() {
                   </button>
                   <button
                     onClick={handleDownload}
-                    disabled={!outputData || (outputFormat === 'excel' && !outputBlob)}
+                    disabled={previewMode === 'batch'
+                      ? !batch.tasks.some((task) => task.status === 'completed' && task.outputFormat)
+                      : !outputData || (outputFormat === 'excel' && !outputBlob)}
                     className="px-4 py-2 bg-gradient-to-r from-[#ff6be4] to-rose-500 hover:opacity-90 text-white text-xs font-semibold rounded-xl shadow-md shadow-pink-500/25 transition-all flex items-center"
                   >
                     <Download className="w-3.5 h-3.5 mr-1.5" /> Download File
@@ -1071,7 +1204,7 @@ export default function App() {
       
 
       {/* Footer */}
-      <footer className="border-t border-slate-200 dark:border-slate-800/80 bg-white/50 dark:bg-slate-950/50 py-4 px-6 mt-auto">
+      <footer className="shrink-0 border-t border-slate-200 dark:border-slate-800/80 bg-white/50 dark:bg-slate-950/50 py-4 px-6 mt-auto">
         <div className="max-w-[1700px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
           <div>NPC-DateConverter &copy; 2026. All rights reserved.</div>
           <div className="flex items-center space-x-6">

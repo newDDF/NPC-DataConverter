@@ -10,6 +10,7 @@ import {
   readBatchSource,
 } from '@/lib/batch/convert';
 import { parseExcelBuffer } from '@/utils/parsers';
+import { serializeSQLFormatted } from '@/utils/sql';
 
 const createTaskId = () =>
   `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -90,11 +91,11 @@ export function useBatchTasks() {
 
     setTasks((current) => [...current, ...newTasks]);
 
-    if (!activeTaskId && newTasks.length > 0) {
+    if (newTasks.length > 0) {
       setActiveTaskId(newTasks[0].id);
       void loadTaskSource(newTasks[0]);
     }
-  }, [activeTaskId, loadTaskSource]);
+  }, [loadTaskSource]);
 
   const removeTask = useCallback((id: string) => {
     setTasks((current) => {
@@ -124,7 +125,12 @@ export function useBatchTasks() {
     });
   }, [activeTask, loadTaskSource]);
 
-  const processTask = useCallback(async (task: BatchTask, format: DataFormat) => {
+  const processTask = useCallback(async (
+    task: BatchTask,
+    format: DataFormat,
+    columns?: string[],
+    tableName = 'data'
+  ) => {
     if (!task.sourceFormat || task.status === 'processing' || task.status === 'completed') {
       return;
     }
@@ -139,7 +145,7 @@ export function useBatchTasks() {
 
     try {
       const source = await readBatchSource(task.file, task.sourceFormat);
-      const result = convertBatchRows(source.rows, format);
+      const result = convertBatchRows(source.rows, format, columns, tableName);
       const sourceData = task.sourceFormat === 'excel'
         ? JSON.stringify(source.rows, null, 2)
         : task.sourceData ?? await task.file.text();
@@ -162,7 +168,11 @@ export function useBatchTasks() {
     }
   }, [updateTask]);
 
-  const startAll = useCallback(async (format: DataFormat = targetFormat) => {
+  const startAll = useCallback(async (
+    format: DataFormat = targetFormat,
+    columns?: string[],
+    tableName = 'data'
+  ) => {
     if (isRunningRef.current) return;
 
     const pending = tasks.filter(
@@ -178,13 +188,60 @@ export function useBatchTasks() {
 
     try {
       for (const task of pending) {
-        await processTask(task, format);
+        await processTask(task, format, columns, tableName);
       }
     } finally {
       isRunningRef.current = false;
       setIsRunning(false);
     }
   }, [tasks, targetFormat, processTask]);
+
+  const formatSQLTask = useCallback(async (
+    id: string,
+    columns: string[],
+    tableName = 'data'
+  ) => {
+    const task = tasks.find((item) => item.id === id);
+    if (!task || task.status !== 'completed' || !task.sourceFormat) return;
+
+    try {
+      const source = await readBatchSource(task.file, task.sourceFormat);
+      const availableColumns = Array.from(
+        new Set(source.rows.flatMap((row) => Object.keys(row)))
+      );
+      const sqlColumns = columns.length
+        ? columns.filter((column) => availableColumns.includes(column))
+        : availableColumns;
+
+      if (sqlColumns.length === 0) {
+        throw new Error('No valid fields are selected for SQL output.');
+      }
+
+      const orderedRows = source.rows.map((row) =>
+        Object.fromEntries(
+          sqlColumns
+            .filter((column) => Object.prototype.hasOwnProperty.call(row, column))
+            .map((column) => [column, row[column]])
+        )
+      );
+
+      const outputText = serializeSQLFormatted(orderedRows, sqlColumns, tableName);
+
+      updateTask(id, {
+        outputFormat: 'sql',
+        outputText,
+        outputBlob: null,
+        error: '',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'SQL formatting failed.';
+      updateTask(id, {
+        error: message,
+        outputText: `SQL formatting error: ${message}`,
+        outputBlob: null,
+      });
+    }
+  }, [tasks, updateTask]);
 
   const downloadTask = useCallback((task: BatchTask) => {
     if (task.status !== 'completed' || !task.outputFormat) return;
@@ -218,6 +275,7 @@ export function useBatchTasks() {
     removeTask,
     clearCompleted,
     startAll,
+    formatSQLTask,
     downloadTask,
   };
 }

@@ -13,6 +13,7 @@ const EXTENSION_FORMATS: Record<string, DataFormat> = {
   yaml: 'yaml',
   yml: 'yaml',
   md: 'md',
+  sql: 'sql',
   xlsx: 'excel',
   xls: 'excel',
 };
@@ -43,17 +44,43 @@ export const readBatchSource = async (
 
 export const convertBatchRows = (
   rows: Record<string, unknown>[],
-  format: DataFormat
+  format: DataFormat,
+  columns?: string[],
+  tableName = 'data'
 ): { text: string; blob: Blob | null } => {
+  const orderedRows = columns === undefined
+    ? rows
+    : rows.map((row) =>
+        Object.fromEntries(
+          columns
+            .filter((key) => Object.prototype.hasOwnProperty.call(row, key))
+            .map((key) => [key, row[key]])
+        )
+      );
+
   if (format === 'excel') {
     return {
-      text: `Excel workbook ready. ${rows.length} record(s) will be exported.`,
-      blob: createExcelBlob(rows),
+      text: `Excel workbook ready. ${orderedRows.length} record(s) will be exported.`,
+      blob: createExcelBlob(orderedRows),
+    };
+  }
+
+  if (format === 'sql') {
+    const sqlColumns = columns?.length
+      ? columns.filter((key) => Object.prototype.hasOwnProperty.call(orderedRows[0] ?? {}, key))
+      : Object.keys(orderedRows[0] ?? {});
+
+    return {
+      text: serializeRows(orderedRows, format, sqlColumns).replace(
+        /INSERT INTO ([^ (]+) \(/g,
+        `INSERT INTO ${tableName} (`
+      ),
+      blob: null,
     };
   }
 
   return {
-    text: serializeRows(rows, format),
+    text: serializeRows(orderedRows, format, columns),
     blob: null,
   };
 };

@@ -36,6 +36,7 @@ export default function JsonFieldManager({
   const [expanded, setExpanded] = useState<string[]>([]);
   const [search, setSearch] = useState('');
   const [dragPath, setDragPath] = useState('');
+  const [dragPosition, setDragPosition] = useState<{ x: number; y: number } | null>(null);
 
   const currentNodes = useMemo(() => {
     if (!focusPath) return nodes;
@@ -87,6 +88,41 @@ export default function JsonFieldManager({
     onNodesChange(update(nodes));
   };
 
+  const handleNodePointerDown = (
+    event: React.PointerEvent<HTMLSpanElement>,
+    path: string
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragPath(path);
+    setDragPosition({ x: event.clientX, y: event.clientY });
+  };
+
+  const handleNodePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragPath) return;
+
+    setDragPosition({ x: event.clientX, y: event.clientY });
+
+    const element = document.elementFromPoint(event.clientX, event.clientY);
+    const targetRow = element?.closest<HTMLElement>('[data-json-field-path]');
+    const targetPath = targetRow?.dataset.jsonFieldPath;
+
+    if (!targetPath || targetPath === dragPath || !targetRow) return;
+
+    const rect = targetRow.getBoundingClientRect();
+    updateNodeOrder(
+      dragPath,
+      targetPath,
+      event.clientY > rect.top + rect.height / 2
+    );
+  };
+
+  const handleNodePointerUp = () => {
+    setDragPath('');
+    setDragPosition(null);
+  };
+
   const renderTree = (items: JsonFieldNode[], depth = 0): React.ReactNode =>
     items.map((node) => {
       const checked = isJsonFieldEffectivelySelected(selection, node.path);
@@ -96,34 +132,10 @@ export default function JsonFieldManager({
       return (
         <div key={node.path}>
           <div
-            draggable
-            onDragStart={(event) => {
-              event.dataTransfer.effectAllowed = 'move';
-              event.dataTransfer.setData('text/plain', node.path);
-              setDragPath(node.path);
-            }}
-            onDragOver={(event) => {
-              if (!dragPath || dragPath === node.path) return;
-              event.preventDefault();
-              event.dataTransfer.dropEffect = 'move';
-            }}
-            onDrop={(event) => {
-              event.preventDefault();
-              const sourcePath = event.dataTransfer.getData('text/plain') || dragPath;
-              if (!sourcePath || sourcePath === node.path) return;
-
-              const rect = event.currentTarget.getBoundingClientRect();
-              updateNodeOrder(
-                sourcePath,
-                node.path,
-                event.clientY > rect.top + rect.height / 2
-              );
-              setDragPath('');
-            }}
-            onDragEnd={() => setDragPath('')}
+            data-json-field-path={node.path}
             className={`group flex items-center gap-1 rounded-xl border px-2 py-2 transition-all ${
               dragPath === node.path
-                ? 'border-dashed border-[#ff6be4] opacity-40'
+                ? 'border-dashed border-[#ff6be4] opacity-30'
                 : checked
                   ? 'border-pink-300 bg-pink-50/80 text-[#ff6be4] shadow-sm dark:border-pink-900 dark:bg-pink-950/40'
                   : 'border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-800/80'
@@ -132,6 +144,7 @@ export default function JsonFieldManager({
           >
             <span
               title="Drag to reorder"
+              onPointerDown={(event) => handleNodePointerDown(event, node.path)}
               className="cursor-grab select-none touch-none font-mono text-slate-400 active:cursor-grabbing"
             >
               ⠿
@@ -260,12 +273,32 @@ export default function JsonFieldManager({
         </button>
       </div>
 
-      <div className="relative flex-1 min-h-0 space-y-1.5 overflow-y-auto overscroll-contain p-0.5">
+      <div
+        className="relative flex-1 min-h-0 space-y-1.5 overflow-y-auto overscroll-contain p-0.5"
+        onPointerMove={handleNodePointerMove}
+        onPointerUp={handleNodePointerUp}
+        onPointerCancel={handleNodePointerUp}
+      >
         {renderTree(visibleNodes)}
         {visibleNodes.length === 0 && (
           <p className="py-6 text-center text-xs text-slate-400">
             No fields found.
           </p>
+        )}
+        {dragPath && dragPosition && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none fixed z-[9999] flex items-center gap-2 rounded-xl border border-[#ff6be4] bg-white/95 px-3 py-2 text-xs font-medium text-[#ff6be4] shadow-2xl dark:bg-slate-900/95 scale-[1.03]"
+            style={{
+              left: dragPosition.x,
+              top: dragPosition.y,
+              transform: 'translate(-50%, -50%)',
+              minWidth: '150px',
+            }}
+          >
+            <span className="font-mono text-slate-400">⠿</span>
+            <span className="truncate">{dragPath.split('.').pop() || dragPath}</span>
+          </div>
         )}
       </div>
     </div>

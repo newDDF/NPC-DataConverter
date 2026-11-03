@@ -2,13 +2,14 @@
 
 import React, { useMemo, useRef, useCallback } from 'react';
 import Prism from 'prismjs';
+import 'prismjs/components/prism-sql';
 
 import 'prismjs/components/prism-json';
 import 'prismjs/components/prism-yaml';
 import 'prismjs/components/prism-markup';
 import 'prismjs/components/prism-markdown';
 
-type CodeFormat = 'json' | 'csv' | 'excel' | 'xml' | 'yaml' | 'md';
+type CodeFormat = 'json' | 'csv' | 'excel' | 'xml' | 'yaml' | 'md' | 'sql';
 
 interface CodePreviewProps {
   value: string;
@@ -33,6 +34,7 @@ const languageMap: Record<CodeFormat, string> = {
   xml: 'markup',
   yaml: 'yaml',
   md: 'markdown',
+  sql: 'sql',
 };
 
 export default function CodePreview({
@@ -106,7 +108,7 @@ export default function CodePreview({
           autoCorrect="off"
           wrap="soft"
           aria-label="Editable source code preview"
-          className={`${codeStyle} absolute inset-0 h-full resize-none overflow-auto border-0 bg-transparent text-transparent caret-slate-900 dark:caret-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#ff6be4] selection:bg-pink-300/40 dark:selection:bg-pink-400/30`}
+          className={`${codeStyle} absolute inset-0 h-full resize-none overflow-auto rounded-xl border-0 bg-transparent text-transparent caret-slate-900 dark:caret-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#ff6be4] selection:bg-pink-300/40 dark:selection:bg-pink-400/30`}
         />
       )}
     </div>

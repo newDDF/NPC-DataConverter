@@ -2,6 +2,7 @@ import Papa from 'papaparse';
 import { dump, load } from 'js-yaml';
 import * as XLSX from 'xlsx';
 import type { DataFormat } from '@/types/converter';
+import { parseSQL, serializeSQL } from '@/utils/sql';
 
 type DataRow = Record<string, unknown>;
 
@@ -78,6 +79,7 @@ export const flattenObject = (
 export const detectFormat = (text: string): DataFormat => {
   const trimmed = text.trim();
   if (!trimmed) return 'json';
+  if (/^INSERT\\s+INTO\\b/i.test(trimmed)) return 'sql';
 
   try {
     JSON.parse(trimmed);
@@ -321,6 +323,10 @@ export const parseTextData = (raw: string, format: DataFormat): DataRow[] => {
   let parsed: unknown;
 
   switch (format) {
+    case 'sql':
+      parsed = parseSQL(raw);
+      break;
+
     case 'json':
       parsed = JSON.parse(raw);
       break;
@@ -417,6 +423,9 @@ export const serializeRows = (
     : Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
 
   switch (format) {
+    case 'sql':
+      return serializeSQL(rows, keys);
+
     case 'json':
       return JSON.stringify(rows, null, 2);
 
