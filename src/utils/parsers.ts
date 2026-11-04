@@ -238,56 +238,115 @@ export const objectToXML = (
   indentSize = 2
 ): string => {
   const indent = ' '.repeat(Math.max(0, Math.min(indentSize, 8)));
+  const chunks: string[] = [];
 
-  const build = (item: unknown, tag: string, depth: number): string => {
+  const appendNode = (item: unknown, tag: string, depth: number): void => {
     const name = safeXmlName(tag);
     const pad = indent.repeat(depth);
 
     if (item === null || item === undefined) {
-      return `${pad}<${name} type="null"/>`;
+      chunks.push(`${pad}<${name} type="null"/>`);
+      return;
     }
 
     if (Array.isArray(item)) {
       if (item.length === 0) {
-        return `${pad}<${name} type="array"/>`;
+        chunks.push(`${pad}<${name} type="array"/>`);
+        return;
       }
 
-      const childXml = item
-        .map((entry) => build(entry, 'item', depth + 1))
-        .join('\n');
+      chunks.push(`${pad}<${name} type="array">\n`);
 
-      return `${pad}<${name} type="array">\n${childXml}\n${pad}</${name}>`;
+      for (let index = 0; index < item.length; index++) {
+        if (index > 0) chunks.push('\n');
+        appendNode(item[index], 'item', depth + 1);
+      }
+
+      chunks.push(`\n${pad}</${name}>`);
+      return;
     }
 
     if (typeof item === 'object' && !(item instanceof Date)) {
       const record = item as Record<string, unknown>;
-      const attributes = Object.entries(record)
-        .filter(([key]) => key.startsWith('@'))
-        .map(([key, val]) => ` ${safeXmlName(key.slice(1))}="${escapeXml(val)}"`)
-        .join('');
+      let hasAttributes = false;
+      let childCount = 0;
 
-      const children = Object.entries(record).filter(
-        ([key]) => !key.startsWith('@') && key !== '#text'
-      );
+      for (const key in record) {
+        if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+
+        if (key.startsWith('@')) {
+          hasAttributes = true;
+        } else if (key !== '#text') {
+          childCount++;
+        }
+      }
+
       const text = record['#text'];
 
-      if (children.length === 0 && (text === undefined || text === null || text === '')) {
-        if (attributes || text !== undefined) {
-          return `${pad}<${name}${attributes}/>`;
+      if (
+        childCount === 0 &&
+        (text === undefined || text === null || text === '')
+      ) {
+        if (hasAttributes || text !== undefined) {
+          chunks.push(`${pad}<${name}`);
+
+          for (const key in record) {
+            if (
+              Object.prototype.hasOwnProperty.call(record, key) &&
+              key.startsWith('@')
+            ) {
+              chunks.push(
+                ` ${safeXmlName(key.slice(1))}="${escapeXml(record[key])}"`
+              );
+            }
+          }
+
+          chunks.push('/>');
+        } else {
+          chunks.push(`${pad}<${name} type="object"/>`);
         }
-        return `${pad}<${name} type="object"/>`;
+
+        return;
       }
 
-      if (children.length === 0) {
-        return `${pad}<${name}${attributes}>${escapeXml(text ?? '')}</${name}>`;
+      chunks.push(`${pad}<${name}`);
+
+      for (const key in record) {
+        if (
+          Object.prototype.hasOwnProperty.call(record, key) &&
+          key.startsWith('@')
+        ) {
+          chunks.push(
+            ` ${safeXmlName(key.slice(1))}="${escapeXml(record[key])}"`
+          );
+        }
       }
 
-      const childXml = children
-        .map(([key, child]) => build(child, key, depth + 1))
-        .join('\n');
-      const textXml = text ? escapeXml(text) : '';
+      if (childCount === 0) {
+        chunks.push(`>${escapeXml(text ?? '')}</${name}>`);
+        return;
+      }
 
-      return `${pad}<${name}${attributes}>\n${textXml ? `${indent.repeat(depth + 1)}${textXml}\n` : ''}${childXml}\n${pad}</${name}>`;
+      chunks.push('>\n');
+
+      if (text) {
+        chunks.push(`${indent.repeat(depth + 1)}${escapeXml(text)}\n`);
+      }
+
+      let childIndex = 0;
+
+      for (const key in record) {
+        if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+        if (key.startsWith('@') || key === '#text') continue;
+
+        if (childIndex > 0) chunks.push('\n');
+
+        appendNode(record[key], key, depth + 1);
+        childIndex++;
+      }
+
+      chunks.push(`\n${pad}</${name}>`);
+      return;
     }
 
     const primitiveType =
@@ -297,20 +356,29 @@ export const objectToXML = (
           ? 'boolean'
           : 'string';
 
-    return `${pad}<${name} type="${primitiveType}">${escapeXml(item)}</${name}>`;
+    chunks.push(
+      `${pad}<${name} type="${primitiveType}">${escapeXml(item)}</${name}>`
+    );
   };
 
-  const body = Array.isArray(value)
-    ? value.map((item) => build(item, itemTag, 1)).join('\n')
-    : build(value, rootTag, 0);
-
   if (Array.isArray(value)) {
-    return `<?xml version="1.0" encoding="UTF-8"?>\n<${safeXmlName(rootTag)}>\n${body}\n</${safeXmlName(rootTag)}>`;
+    chunks.push(
+      `<?xml version="1.0" encoding="UTF-8"?>\n<${safeXmlName(rootTag)}>\n`
+    );
+
+    for (let index = 0; index < value.length; index++) {
+      if (index > 0) chunks.push('\n');
+      appendNode(value[index], itemTag, 1);
+    }
+
+    chunks.push(`\n</${safeXmlName(rootTag)}>`);
+  } else {
+    chunks.push('<?xml version="1.0" encoding="UTF-8"?>\n');
+    appendNode(value, rootTag, 0);
   }
 
-  return `<?xml version="1.0" encoding="UTF-8"?>\n${body}`;
+  return chunks.join('');
 };
-
 const cellValue = (value: unknown): string => {
   if (value === null || value === undefined) return '';
   if (typeof value === 'object') return JSON.stringify(value);
@@ -420,7 +488,15 @@ export const serializeRows = (
 ): string => {
   const keys = columns?.length
     ? columns
-    : Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+    : (() => {
+        const seen = new Set<string>();
+        for (const row of rows) {
+          for (const key of Object.keys(row)) {
+            seen.add(key);
+          }
+        }
+        return Array.from(seen);
+      })();
 
   switch (format) {
     case 'sql':
@@ -429,13 +505,22 @@ export const serializeRows = (
     case 'json':
       return JSON.stringify(rows, null, 2);
 
-    case 'csv':
-      return Papa.unparse(
-        rows.map((row) =>
-          Object.fromEntries(keys.map((key) => [key, cellValue(row[key])]))
-        ),
-        { columns: keys, skipEmptyLines: false }
-      );
+    case 'csv': {
+      const csvRows: Record<string, string>[] = [];
+
+      for (const row of rows) {
+        const csvRow: Record<string, string> = {};
+        for (const key of keys) {
+          csvRow[key] = cellValue(row[key]);
+        }
+        csvRows.push(csvRow);
+      }
+
+      return Papa.unparse(csvRows, {
+        columns: keys,
+        skipEmptyLines: false,
+      });
+    }
 
     case 'yaml':
       return dump(rows, { noRefs: true, lineWidth: -1, sortKeys: false });
@@ -446,12 +531,18 @@ export const serializeRows = (
     case 'md': {
       const escapeCell = (value: unknown) =>
         cellValue(value).replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
-      const header = `| ${keys.map(escapeCell).join(' | ')} |`;
-      const separator = `| ${keys.map(() => '---').join(' | ')} |`;
-      const body = rows.map(
-        (row) => `| ${keys.map((key) => escapeCell(row[key])).join(' | ')} |`
-      );
-      return [header, separator, ...body].join('\n');
+
+      const chunks: string[] = [];
+      chunks.push(`| ${keys.map(escapeCell).join(' | ')} |`);
+      chunks.push(`| ${keys.map(() => '---').join(' | ')} |`);
+
+      for (const row of rows) {
+        chunks.push(
+          `| ${keys.map((key) => escapeCell(row[key])).join(' | ')} |`
+        );
+      }
+
+      return chunks.join('\n');
     }
 
     case 'excel':

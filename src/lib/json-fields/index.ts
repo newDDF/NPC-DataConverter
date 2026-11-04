@@ -194,7 +194,8 @@ export const setJsonLevelSelection = (
 const filterObject = (
   value: Record<string, unknown>,
   nodes: JsonFieldNode[],
-  selection: JsonFieldSelection
+  selection: JsonFieldSelection,
+  renames: Record<string, string>
 ): Record<string, unknown> => {
   const result: Record<string, unknown> = {};
 
@@ -207,7 +208,12 @@ const filterObject = (
     }
 
     const fieldValue = value[node.key];
-    result[node.key] = filterValue(fieldValue, node.children, selection);
+    result[renames[node.path] ?? node.key] = filterValue(
+      fieldValue,
+      node.children,
+      selection,
+      renames
+    );
   });
 
   return result;
@@ -216,16 +222,17 @@ const filterObject = (
 const filterValue = (
   value: unknown,
   children: JsonFieldNode[],
-  selection: JsonFieldSelection
+  selection: JsonFieldSelection,
+  renames: Record<string, string>
 ): unknown => {
   if (Array.isArray(value)) {
     return value.map((item) => {
       if (isPlainObject(item)) {
-        return filterObject(item, children, selection);
+        return filterObject(item, children, selection, renames);
       }
 
       if (Array.isArray(item)) {
-        return filterValue(item, children, selection);
+        return filterValue(item, children, selection, renames);
       }
 
       return item;
@@ -233,7 +240,7 @@ const filterValue = (
   }
 
   if (isPlainObject(value)) {
-    return filterObject(value, children, selection);
+    return filterObject(value, children, selection, renames);
   }
 
   return value;
@@ -246,9 +253,10 @@ const filterValue = (
 export const filterJsonRows = (
   rows: Record<string, unknown>[],
   nodes: JsonFieldNode[],
-  selection: JsonFieldSelection
+  selection: JsonFieldSelection,
+  renames: Record<string, string> = {}
 ): Record<string, unknown>[] =>
-  rows.map((row) => filterObject(row, nodes, selection));
+  rows.map((row) => filterObject(row, nodes, selection, renames));
 
 /**
  * Count fields at the current level only.

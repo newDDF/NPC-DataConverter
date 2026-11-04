@@ -3,6 +3,8 @@
 import { useMemo, useState } from 'react';
 import {
   Check,
+  Pencil,
+  X,
   ChevronDown,
   ChevronRight,
   FolderOpen,
@@ -24,6 +26,8 @@ interface Props {
   selection: JsonFieldSelection;
   onSelectionChange: (value: JsonFieldSelection) => void;
   onNodesChange: (value: JsonFieldNode[]) => void;
+  fieldRenames: Record<string, string>;
+  onFieldRename: (path: string, name: string) => void;
 }
 
 export default function JsonFieldManager({
@@ -31,12 +35,17 @@ export default function JsonFieldManager({
   selection,
   onSelectionChange,
   onNodesChange,
+  fieldRenames,
+  onFieldRename,
 }: Props) {
   const [focusPath, setFocusPath] = useState('');
   const [expanded, setExpanded] = useState<string[]>([]);
   const [search, setSearch] = useState('');
   const [dragPath, setDragPath] = useState('');
   const [dragPosition, setDragPosition] = useState<{ x: number; y: number } | null>(null);
+  const [editingPath, setEditingPath] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState('');
+  const [renameError, setRenameError] = useState('');
 
   const currentNodes = useMemo(() => {
     if (!focusPath) return nodes;
@@ -53,10 +62,15 @@ export default function JsonFieldManager({
   }, [nodes, focusPath]);
 
   const currentLabel = focusPath.split('.').pop()?.replace('[]', '') || 'root';
-  const visibleNodes = currentNodes.filter((node) =>
-    node.key.toLowerCase().includes(search.toLowerCase()) ||
-    node.path.toLowerCase().includes(search.toLowerCase())
-  );
+  const visibleNodes = currentNodes.filter((node) => {
+    const displayName = fieldRenames[node.path] ?? node.key;
+    const query = search.toLowerCase();
+    return (
+      node.key.toLowerCase().includes(query) ||
+      displayName.toLowerCase().includes(query) ||
+      node.path.toLowerCase().includes(query)
+    );
+  });
 
   const toggleExpanded = (path: string) => {
     setExpanded((previous) =>
@@ -176,12 +190,102 @@ export default function JsonFieldManager({
                 ? <Check className="h-3.5 w-3.5 shrink-0 text-[#ff6be4]" />
                 : <span className="h-3.5 w-3.5 shrink-0 rounded border border-slate-300 dark:border-slate-600" />}
               <span className="truncate text-[11px] font-mono">
-                {node.key}
+                {fieldRenames[node.path] ?? node.key}
               </span>
               <span className="ml-auto shrink-0 text-[9px] text-slate-400">
                 {node.type}
               </span>
             </button>
+
+            {editingPath === node.path ? (
+              <div className="flex min-w-0 items-center gap-1">
+                <input
+                  autoFocus
+                  value={editingName}
+                  onChange={(event) => {
+                    setEditingName(event.target.value);
+                    setRenameError('');
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      const nextName = editingName.trim();
+                      if (!nextName) {
+                        setRenameError('Field name cannot be empty.');
+                        return;
+                      }
+                      const duplicate = items.some((other) =>
+                        other.path !== node.path &&
+                        (fieldRenames[other.path] ?? other.key).toLowerCase() === nextName.toLowerCase()
+                      );
+                      if (duplicate) {
+                        setRenameError('A field with this name already exists at this level.');
+                        return;
+                      }
+                      onFieldRename(node.path, nextName);
+                      setEditingPath(null);
+                      setRenameError('');
+                    }
+                    if (event.key === 'Escape') {
+                      setEditingPath(null);
+                      setRenameError('');
+                    }
+                  }}
+                  className="w-28 min-w-0 rounded border border-[#ff6be4] bg-white px-1.5 py-1 text-[10px] font-mono text-slate-800 outline-none dark:bg-slate-900 dark:text-slate-100"
+                  aria-label="New field name"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextName = editingName.trim();
+                    if (!nextName) {
+                      setRenameError('Field name cannot be empty.');
+                      return;
+                    }
+                    const duplicate = items.some((other) =>
+                      other.path !== node.path &&
+                      (fieldRenames[other.path] ?? other.key).toLowerCase() === nextName.toLowerCase()
+                    );
+                    if (duplicate) {
+                      setRenameError('A field with this name already exists at this level.');
+                      return;
+                    }
+                    onFieldRename(node.path, nextName);
+                    setEditingPath(null);
+                    setRenameError('');
+                  }}
+                  className="rounded p-1 text-[#ff6be4]"
+                  title="Save field name"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingPath(null);
+                    setRenameError('');
+                  }}
+                  className="rounded p-1 text-slate-400"
+                  title="Cancel rename"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingPath(node.path);
+                  setEditingName(fieldRenames[node.path] ?? node.key);
+                  setRenameError('');
+                }}
+                className="rounded p-1 text-slate-400 hover:text-[#ff6be4]"
+                title="Rename field"
+                aria-label="Rename field"
+              >
+                <Pencil className="h-3 w-3" />
+              </button>
+            )}
 
             {hasChildren && (
               <button
@@ -194,6 +298,10 @@ export default function JsonFieldManager({
               </button>
             )}
           </div>
+
+          {editingPath === node.path && renameError && (
+            <p className="ml-8 mt-1 text-[10px] text-rose-500">{renameError}</p>
+          )}
 
           {hasChildren && isExpanded && (
             <div className="mt-1 space-y-1">

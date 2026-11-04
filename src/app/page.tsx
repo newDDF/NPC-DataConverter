@@ -37,7 +37,8 @@ import {
   Table,
   Code2,
   Layers,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Pencil
 } from 'lucide-react';
 
 import type { DataFormat, InputFormatOption } from '@/types/converter';
@@ -156,16 +157,42 @@ const renderDataTable = (
     return String(value);
   };
 
+  const measureTextWidth = (value: string): number =>
+    Array.from(value).reduce((width, char) => {
+      const code = char.codePointAt(0) ?? 0;
+      const isWide =
+        /[\u1100-\u11FF\u2E80-\uA4CF\uAC00-\uD7AF\uF900-\uFAFF\uFE10-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/u.test(char) ||
+        code > 0x1f000;
+
+      return width + (isWide ? 12 : 6.5);
+    }, 0);
+
+  const columnWidths = columns.map((column) => {
+    let maxWidth = measureTextWidth(column);
+
+    for (const row of rows) {
+      const width = measureTextWidth(formatCell(row[column]));
+      maxWidth = Math.max(maxWidth, width);
+    }
+
+    return Math.min(280, Math.max(80, Math.ceil(maxWidth + 24)));
+  });
+
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
       <div className="flex-1 min-h-0 min-w-0 overflow-auto overscroll-contain">
         <table className="w-max min-w-full table-auto border-collapse text-left text-xs">
+          <colgroup>
+            {columns.map((column, index) => (
+              <col key={column} style={{ width: `${columnWidths[index]}px` }} />
+            ))}
+          </colgroup>
           <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800">
             <tr>
               {columns.map((column) => (
                 <th
                   key={column}
-                  className="w-[220px] min-w-[180px] max-w-[260px] whitespace-normal break-words border-b border-slate-200 dark:border-slate-700 px-3 py-2 font-semibold text-slate-700 dark:text-slate-200"
+                  className="min-w-[80px] max-w-[280px] whitespace-normal break-words border-b border-slate-200 dark:border-slate-700 px-3 py-2 font-semibold text-slate-700 dark:text-slate-200"
                 >
                   {column}
                 </th>
@@ -181,7 +208,7 @@ const renderDataTable = (
                 {columns.map((column) => (
                   <td
                     key={column}
-                    className="w-[220px] min-w-[180px] max-w-[260px] border-b border-slate-100 dark:border-slate-800 px-3 py-2 align-top text-slate-600 dark:text-slate-300"
+                    className="min-w-[80px] max-w-[280px] border-b border-slate-100 dark:border-slate-800 px-3 py-2 align-top text-slate-600 dark:text-slate-300"
                   >
                     <div className="max-h-24 overflow-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                       {formatCell(row[column])}
@@ -220,6 +247,10 @@ export default function App() {
 
   const [availableFields, setAvailableFields] = useState<string[]>([]);
   const [selectedFields, setSelectedFields] = useState<string[]>([]);
+  const [fieldRenames, setFieldRenames] = useState<Record<string, string>>({});
+  const [editingField, setEditingField] = useState<string | null>(null);
+  const [editingFieldName, setEditingFieldName] = useState('');
+  const [fieldRenameError, setFieldRenameError] = useState('');
   const [jsonFieldTree, setJsonFieldTree] = useState<JsonFieldNode[]>([]);
   const [jsonFieldSelection, setJsonFieldSelection] = useState<JsonFieldSelection>({});
   const [fieldSearchTerm, setFieldSearchTerm] = useState('');
@@ -464,7 +495,7 @@ export default function App() {
       const fields = selectedFields;
 
       const filtered = activeInputFormat === 'json' && outputFormat === 'json'
-        ? filterJsonRows(rows, jsonFieldTree, jsonFieldSelection)
+        ? filterJsonRows(rows, jsonFieldTree, jsonFieldSelection, fieldRenames)
         : rows.map((row) => {
             const result: Record<string, any> = {};
             fields.forEach((field) => {
@@ -475,10 +506,23 @@ export default function App() {
             return result;
           });
 
-      setConvertedRows(filtered);
+      const renamedFields = fields.map((field) => fieldRenames[field] ?? field);
+      const renamedRows =
+        activeInputFormat === 'json' && outputFormat === 'json'
+          ? filtered
+          : filtered.map((row) =>
+              Object.fromEntries(
+                Object.entries(row).map(([key, value]) => [
+                  fieldRenames[key] ?? key,
+                  value,
+                ])
+              )
+            );
+
+      setConvertedRows(renamedRows);
 
       if (outputFormat === 'excel') {
-        setOutputBlob(createExcelBlob(filtered));
+        setOutputBlob(createExcelBlob(renamedRows));
         setOutputData(
           `Excel workbook ready. ${filtered.length} record(s) will be exported to an .xlsx file.`
         );
@@ -486,13 +530,13 @@ export default function App() {
         setOutputBlob(null);
         setOutputData(
           outputFormat === 'sql'
-            ? serializeSQL(filtered, fields, sqlTableName)
+            ? serializeSQL(renamedRows, renamedFields, sqlTableName)
             : serializeRows(
-                filtered,
+                renamedRows,
                 outputFormat,
                 activeInputFormat === 'json' && outputFormat === 'json'
-                  ? Object.keys(filtered[0] ?? {})
-                  : fields
+                  ? Object.keys(renamedRows[0] ?? {})
+                  : renamedFields
               )
         );
       }
@@ -508,7 +552,7 @@ export default function App() {
   useEffect(() => {
     if (previewMode !== 'single') return;
     handleConvert();
-  }, [previewMode, inputData, activeInputFormat, outputFormat, selectedFields, availableFields, jsonFieldTree, jsonFieldSelection, parseRawToJS, sqlTableName]);
+  }, [previewMode, inputData, activeInputFormat, outputFormat, selectedFields, availableFields, jsonFieldTree, jsonFieldSelection, fieldRenames, parseRawToJS, sqlTableName]);
 
   const handleCopy = async () => {
     if (!outputData || outputFormat === 'excel') return;
@@ -649,7 +693,57 @@ export default function App() {
     setActiveDrag(null);
   };
 
-  const filteredFields = availableFields.filter(f => f.toLowerCase().includes(fieldSearchTerm.toLowerCase()));
+  const startFieldRename = (field: string) => {
+    setEditingField(field);
+    setEditingFieldName(fieldRenames[field] ?? field);
+    setFieldRenameError('');
+  };
+
+  const cancelFieldRename = () => {
+    setEditingField(null);
+    setEditingFieldName('');
+    setFieldRenameError('');
+  };
+
+  const saveFieldRename = () => {
+    if (!editingField) return;
+
+    const nextName = editingFieldName.trim();
+
+    if (!nextName) {
+      setFieldRenameError('Field name cannot be empty.');
+      return;
+    }
+
+    const duplicate = availableFields.some((field) => {
+      if (field === editingField) return false;
+      const displayName = fieldRenames[field] ?? field;
+      return displayName.toLowerCase() === nextName.toLowerCase();
+    });
+
+    if (duplicate) {
+      setFieldRenameError('This field name is already in use.');
+      return;
+    }
+
+    setFieldRenames((previous) => {
+      const next = { ...previous };
+      if (nextName === editingField) {
+        delete next[editingField];
+      } else {
+        next[editingField] = nextName;
+      }
+      return next;
+    });
+
+    cancelFieldRename();
+  };
+
+  const filteredFields = availableFields.filter((field) => {
+    const term = fieldSearchTerm.toLowerCase();
+    const displayName = fieldRenames[field] ?? field;
+    return field.toLowerCase().includes(term) || displayName.toLowerCase().includes(term);
+  });
 
   return (
     <div className="min-h-screen lg:h-dvh lg:min-h-0 lg:overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans selection:bg-[#ff6be4] selection:text-white">
@@ -758,7 +852,7 @@ export default function App() {
             <div className="flex justify-center my-2">
               <button
                 onClick={handleConvert}
-                className="w-full py-2 bg-gradient-to-r from-[#ff6be4] to-rose-500 hover:opacity-90 text-white rounded-xl text-xs font-bold shadow-md shadow-pink-500/25 flex items-center justify-center gap-2 transition-all"
+                className="w-full py-2 bg-gradient-to-r from-[#ff6be4] to-rose-500 hover:brightness-110 hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0 active:scale-[0.98] text-white rounded-xl text-xs font-bold shadow-md shadow-pink-500/25 flex items-center justify-center gap-2 transition-all duration-200"
               >
                 <ArrowRightLeft className="w-4 h-4 animate-spin-slow" />
                 <span>Convert Data</span>
@@ -795,6 +889,10 @@ export default function App() {
                 selection={jsonFieldSelection}
                 onSelectionChange={setJsonFieldSelection}
                 onNodesChange={setJsonFieldTree}
+                fieldRenames={fieldRenames}
+                onFieldRename={(path, name) =>
+                  setFieldRenames((previous) => ({ ...previous, [path]: name }))
+                }
               />
             ) : (
               <>
@@ -847,6 +945,7 @@ export default function App() {
                     key={field}
                     data-field-key={field}
                     onClick={() => {
+                      if (editingField === field) return;
                       setSelectedFields(prev =>
                         isSelected ? prev.filter(f => f !== field) : [...prev, field]
                       );
@@ -859,7 +958,7 @@ export default function App() {
                           : 'bg-slate-50 dark:bg-slate-800/80 text-slate-500 border-slate-200 dark:border-slate-700'
                     }`}
                   >
-                    <div className="flex items-center gap-2 overflow-hidden">
+                    <div className="flex items-center gap-2 overflow-hidden min-w-0 flex-1">
                       <span
                         onPointerDown={(e) => handleFieldPointerDown(e, field)}
                         onClick={(e) => e.stopPropagation()}
@@ -869,9 +968,78 @@ export default function App() {
                       >
                         ⠿
                       </span>
-                      <span className="truncate text-[11px] font-mono">{field}</span>
+                      {editingField === field ? (
+                        <input
+                          autoFocus
+                          value={editingFieldName}
+                          onChange={(e) => {
+                            setEditingFieldName(e.target.value);
+                            setFieldRenameError('');
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              saveFieldRename();
+                            } else if (e.key === 'Escape') {
+                              cancelFieldRename();
+                            }
+                          }}
+                          aria-invalid={Boolean(fieldRenameError)}
+                          title={fieldRenameError || 'Enter a new field name'}
+                          className={`min-w-0 flex-1 rounded border bg-white dark:bg-slate-900 px-1.5 py-1 text-[11px] font-mono text-slate-800 dark:text-slate-100 outline-none ${fieldRenameError ? 'border-red-500' : 'border-[#ff6be4]'}`}
+                        />
+                      ) : (
+                        <span className="truncate text-[11px] font-mono">
+                          {fieldRenames[field] ?? field}
+                        </span>
+                      )}
                     </div>
-                    {isSelected && <Check className="w-3.5 h-3.5 text-[#ff6be4]" />}
+                    <div className="flex items-center gap-1 ml-2 shrink-0">
+                      {editingField === field ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              saveFieldRename();
+                            }}
+                            title="Save field name"
+                            className="p-1 rounded hover:bg-pink-100 dark:hover:bg-pink-900/40 text-[#ff6be4]"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              cancelFieldRename();
+                            }}
+                            title="Cancel rename"
+                            className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startFieldRename(field);
+                            }}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            title="Rename field"
+                            className="p-1 rounded opacity-60 hover:opacity-100 hover:bg-pink-100 dark:hover:bg-pink-900/40 text-slate-400 hover:text-[#ff6be4]"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          {isSelected && <Check className="w-3.5 h-3.5 text-[#ff6be4]" />}
+                        </>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -1187,7 +1355,7 @@ export default function App() {
                     disabled={previewMode === 'batch'
                       ? !batch.tasks.some((task) => task.status === 'completed' && task.outputFormat)
                       : !outputData || (outputFormat === 'excel' && !outputBlob)}
-                    className="px-4 py-2 bg-gradient-to-r from-[#ff6be4] to-rose-500 hover:opacity-90 text-white text-xs font-semibold rounded-xl shadow-md shadow-pink-500/25 transition-all flex items-center"
+                    className="px-4 py-2 bg-gradient-to-r from-[#ff6be4] to-rose-500 hover:brightness-110 hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0 active:scale-[0.98] text-white text-xs font-semibold rounded-xl shadow-md shadow-pink-500/25 transition-all duration-200 flex items-center"
                   >
                     <Download className="w-3.5 h-3.5 mr-1.5" /> Download File
                   </button>
