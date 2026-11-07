@@ -1,0 +1,310 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+import type { ChangeEvent, DragEvent } from 'react';
+import type { StreamingWorkerResponse } from '@/lib/streaming/types';
+
+type Status = 'idle' | 'processing' | 'completed' | 'error' | 'cancelled';
+
+const formatBytes = (bytes: number) => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+};
+
+export default function StreamingWorkspace() {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const workerRef = useRef<Worker | null>(null);
+
+  const [file, setFile] = useState<File | null>(null);
+  const [status, setStatus] = useState<Status>('idle');
+  const [chunks, setChunks] = useState(0);
+  const [rows, setRows] = useState(0);
+  const [parseErrors, setParseErrors] = useState(0);
+  const [processedBytes, setProcessedBytes] = useState(0);
+  const [outputBytes, setOutputBytes] = useState(0);
+  const [outputFileName, setOutputFileName] = useState('');
+  const [error, setError] = useState('');
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      workerRef.current?.terminate();
+      workerRef.current = null;
+    };
+  }, []);
+
+  const selectFile = (selectedFile?: File) => {
+    if (!selectedFile) return;
+
+    if (!selectedFile.name.toLowerCase().endsWith('.csv')) {
+      setFile(null);
+      setError('Please select a CSV file.');
+      setStatus('error');
+      return;
+    }
+
+    workerRef.current?.terminate();
+    workerRef.current = null;
+
+    setFile(selectedFile);
+    setStatus('idle');
+    setChunks(0);
+    setRows(0);
+    setParseErrors(0);
+    setProcessedBytes(0);
+    setOutputBytes(0);
+    setOutputFileName('');
+    setError('');
+  };
+
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    selectFile(event.target.files?.[0]);
+    event.target.value = '';
+  };
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragging(false);
+    selectFile(event.dataTransfer.files?.[0]);
+  };
+
+  const startConversion = () => {
+    if (!file || status === 'processing') return;
+
+    workerRef.current?.terminate();
+
+    setStatus('processing');
+    setChunks(0);
+    setRows(0);
+    setParseErrors(0);
+    setProcessedBytes(0);
+    setOutputBytes(0);
+    setOutputFileName('');
+    setError('');
+
+    try {
+      const worker = new Worker(
+        new URL('../../workers/streaming.worker.ts', import.meta.url),
+        { type: 'module' },
+      );
+
+      workerRef.current = worker;
+
+      worker.onmessage = (event: MessageEvent<StreamingWorkerResponse>) => {
+        const message = event.data;
+
+        if (message.type === 'progress') {
+          setChunks(message.chunks);
+          setRows(message.rows);
+          setParseErrors(message.parseErrors);
+          setProcessedBytes(message.processedBytes);
+          setOutputBytes(message.outputBytes);
+          return;
+        }
+
+        if (message.type === 'complete') {
+          setChunks(message.chunks);
+          setRows(message.rows);
+          setParseErrors(message.parseErrors);
+          setOutputBytes(message.outputBytes);
+          setOutputFileName(message.fileName);
+          setStatus('completed');
+          worker.terminate();
+          workerRef.current = null;
+          return;
+        }
+
+        setError(message.message);
+        setStatus('error');
+        worker.terminate();
+        workerRef.current = null;
+      };
+
+      worker.onerror = () => {
+        setError('The background worker encountered an unexpected error.');
+        setStatus('error');
+        worker.terminate();
+        workerRef.current = null;
+      };
+
+      worker.postMessage(file);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Unable to start worker.');
+      setStatus('error');
+    }
+  };
+
+  const cancelConversion = () => {
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    setStatus('cancelled');
+  };
+
+  const downloadOutput = async () => {
+    if (!outputFileName) return;
+
+    try {
+      const storage = navigator.storage as unknown as {
+        getDirectory(): Promise<{
+          getFileHandle(name: string): Promise<{
+            getFile(): Promise<File>;
+          }>;
+        }>;
+      };
+
+      const directory = await storage.getDirectory();
+      const handle = await directory.getFileHandle(outputFileName);
+      const outputFile = await handle.getFile();
+      const url = URL.createObjectURL(outputFile);
+      const anchor = document.createElement('a');
+
+      anchor.href = url;
+      anchor.download = outputFileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+
+      window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (error) {
+      setError(error instanceof Error
+        ? error.message
+        : 'Unable to download the JSON file.');
+      setStatus('error');
+    }
+  };
+
+  const progress = file && file.size > 0
+    ? Math.min(100, Math.round((processedBytes / file.size) * 100))
+    : 0;
+
+  return (
+    <main className="min-h-screen bg-slate-50 px-4 py-12 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+      <div className="mx-auto max-w-3xl space-y-8">
+        <header className="space-y-2">
+          <p className="text-sm font-semibold uppercase tracking-wider text-pink-500">
+            Streaming Converter
+          </p>
+          <h1 className="text-3xl font-bold">CSV to JSON</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            Incremental parsing and local file output.
+          </p>
+        </header>
+
+        <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => inputRef.current?.click()}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                inputRef.current?.click();
+              }
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={handleDrop}
+            className={`cursor-pointer rounded-xl border-2 border-dashed p-10 text-center transition-colors ${
+              dragging
+                ? 'border-pink-500 bg-pink-50 dark:bg-pink-950/20'
+                : 'border-slate-300 hover:border-pink-400 dark:border-slate-700'
+            }`}
+          >
+            <p className="text-lg font-medium">Drop a CSV file here or browse</p>
+            <p className="mt-2 text-sm text-slate-500">
+              Select a file to begin
+            </p>
+            {file && (
+              <p className="mt-4 break-all text-sm font-medium text-pink-500">
+                {file.name} · {formatBytes(file.size)}
+              </p>
+            )}
+          </div>
+
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".csv,text/csv"
+            onChange={handleFileChange}
+            className="hidden"
+          />
+
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={startConversion}
+              disabled={!file || status === 'processing'}
+              className="rounded-lg bg-pink-500 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-pink-600 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Start Conversion
+            </button>
+
+            {status === 'processing' && (
+              <button
+                type="button"
+                onClick={cancelConversion}
+                className="rounded-lg border border-slate-300 px-5 py-2.5 text-sm font-medium dark:border-slate-700"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+
+          {status === 'processing' && (
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm">
+                <span>Processing CSV</span>
+                <span className="tabular-nums">{progress}%</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                <div
+                  className="h-full rounded-full bg-pink-500 transition-all duration-200"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {(status === 'processing' || status === 'completed') && (
+            <div className="space-y-1 rounded-lg bg-slate-50 p-4 text-sm dark:bg-slate-800">
+              <p>Input processed: {formatBytes(processedBytes)}</p>
+              <p>Parsed rows: {rows.toLocaleString()}</p>
+              <p>Chunks processed: {chunks.toLocaleString()}</p>
+              <p>Parse errors: {parseErrors.toLocaleString()}</p>
+              <p>JSON output size: {formatBytes(outputBytes)}</p>
+            </div>
+          )}
+
+          {status === 'completed' && (
+            <div className="space-y-3">
+              <p className="text-sm text-emerald-600">
+                JSON file created successfully.
+              </p>
+              <button
+                type="button"
+                onClick={downloadOutput}
+                className="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+              >
+                Download JSON
+              </button>
+            </div>
+          )}
+
+          {status === 'cancelled' && (
+            <p className="text-sm text-amber-600">Conversion cancelled.</p>
+          )}
+
+          {status === 'error' && (
+            <p className="rounded-lg bg-red-50 p-4 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">
+              {error}
+            </p>
+          )}
+        </section>
+      </div>
+    </main>
+  );
+}

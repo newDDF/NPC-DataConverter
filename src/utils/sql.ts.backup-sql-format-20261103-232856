@@ -1,0 +1,302 @@
+type DataRow = Record<string, unknown>;
+
+const isIdentifierStart = (char: string) => /[A-Za-z_$]/.test(char);
+const isIdentifierPart = (char: string) => /[A-Za-z0-9_$]/.test(char);
+
+class SQLReader {
+  private index = 0;
+
+  constructor(private readonly source: string) {}
+
+  private skipWhitespace() {
+    while (this.index < this.source.length && /\s/.test(this.source[this.index])) {
+      this.index++;
+    }
+  }
+
+  private expect(value: string) {
+    this.skipWhitespace();
+    if (this.source.slice(this.index, this.index + value.length).toUpperCase() !== value.toUpperCase()) {
+      throw new Error(`Expected "${value}" at position ${this.index + 1}.`);
+    }
+    this.index += value.length;
+  }
+
+  private readIdentifier(): string {
+    this.skipWhitespace();
+    const start = this.index;
+    const first = this.source[this.index];
+
+    if (first === '`' || first === '"' || first === '[') {
+      const closing = first === '[' ? ']' : first;
+      this.index++;
+      let result = '';
+
+      while (this.index < this.source.length) {
+        const char = this.source[this.index++];
+
+        if (char === closing) {
+          if (this.source[this.index] === closing && closing !== ']') {
+            result += closing;
+            this.index++;
+            continue;
+          }
+          return result;
+        }
+
+        result += char;
+      }
+
+      throw new Error('Unterminated quoted SQL identifier.');
+    }
+
+    if (!isIdentifierStart(first ?? '')) {
+      throw new Error(`Invalid SQL identifier at position ${start + 1}.`);
+    }
+
+    this.index++;
+    while (this.index < this.source.length && isIdentifierPart(this.source[this.index])) {
+      this.index++;
+    }
+
+    return this.source.slice(start, this.index);
+  }
+
+  private readValue(): unknown {
+    this.skipWhitespace();
+    const char = this.source[this.index];
+
+    if (char === "'") {
+      this.index++;
+      let result = '';
+
+      while (this.index < this.source.length) {
+        const current = this.source[this.index++];
+
+        if (current === "'") {
+          if (this.source[this.index] === "'") {
+            result += "'";
+            this.index++;
+            continue;
+          }
+          return result;
+        }
+
+        if (current === '\\' && this.index < this.source.length) {
+          const escaped = this.source[this.index++];
+          const escapes: Record<string, string> = {
+            n: '\n',
+            r: '\r',
+            t: '\t',
+            '0': '\0',
+            '\\': '\\',
+            "'": "'",
+          };
+          result += escapes[escaped] ?? escaped;
+        } else {
+          result += current;
+        }
+      }
+
+      throw new Error('Unterminated SQL string literal.');
+    }
+
+    const remaining = this.source.slice(this.index);
+    const token = remaining.match(/^(NULL|TRUE|FALSE)\b/i);
+
+    if (token) {
+      this.index += token[0].length;
+      switch (token[0].toUpperCase()) {
+        case 'NULL': return null;
+        case 'TRUE': return true;
+        case 'FALSE': return false;
+      }
+    }
+
+    const number = remaining.match(/^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/);
+    if (number) {
+      this.index += number[0].length;
+      const value = Number(number[0]);
+      if (!Number.isFinite(value)) throw new Error('Invalid numeric SQL literal.');
+      return value;
+    }
+
+    throw new Error(`Unsupported SQL value at position ${this.index + 1}.`);
+  }
+
+  private readTuple(): unknown[] {
+    this.expect('(');
+    const values: unknown[] = [];
+
+    this.skipWhitespace();
+    if (this.source[this.index] === ')') {
+      this.index++;
+      return values;
+    }
+
+    while (true) {
+      values.push(this.readValue());
+      this.skipWhitespace();
+
+      if (this.source[this.index] === ')') {
+        this.index++;
+        return values;
+      }
+
+      this.expect(',');
+    }
+  }
+
+  parse(): DataRow[] {
+    const rows: DataRow[] = [];
+    let expectedColumns: string[] | null = null;
+
+    while (true) {
+      this.skipWhitespace();
+
+      while (this.source[this.index] === ';') {
+        this.index++;
+        this.skipWhitespace();
+      }
+
+      if (this.index >= this.source.length) break;
+
+      this.expect('INSERT');
+      this.expect('INTO');
+
+      let tableName = this.readIdentifier();
+      while (true) {
+        this.skipWhitespace();
+        if (this.source[this.index] !== '.') break;
+        this.index++;
+        tableName += `.${this.readIdentifier()}`;
+      }
+
+      let columns: string[] | null = null;
+      this.skipWhitespace();
+
+      if (this.source[this.index] === '(') {
+        this.index++;
+        columns = [];
+
+        while (true) {
+          columns.push(this.readIdentifier());
+          this.skipWhitespace();
+
+          if (this.source[this.index] === ')') {
+            this.index++;
+            break;
+          }
+
+          this.expect(',');
+        }
+
+        if (new Set(columns).size !== columns.length) {
+          throw new Error('Duplicate column names are not supported.');
+        }
+      }
+
+      this.expect('VALUES');
+
+      const statementRows: unknown[][] = [];
+
+      while (true) {
+        statementRows.push(this.readTuple());
+        this.skipWhitespace();
+
+        if (this.source[this.index] !== ',') break;
+        this.index++;
+      }
+
+      if (!columns) {
+        throw new Error('INSERT statements must include an explicit column list.');
+      }
+
+      if (expectedColumns && (
+        expectedColumns.length !== columns.length ||
+        expectedColumns.some((column, index) => column !== columns![index])
+      )) {
+        throw new Error('Multiple INSERT statements must use the same table columns.');
+      }
+
+      expectedColumns ??= columns;
+
+      for (const values of statementRows) {
+        if (values.length !== columns.length) {
+          throw new Error(`Column count mismatch: expected ${columns.length}, received ${values.length}.`);
+        }
+
+        rows.push(
+          Object.fromEntries(columns.map((column, index) => [column, values[index]]))
+        );
+      }
+
+      this.skipWhitespace();
+      if (this.source[this.index] === ';') this.index++;
+      else if (this.index < this.source.length) {
+        throw new Error(`Unexpected SQL content at position ${this.index + 1}.`);
+      }
+    }
+
+    if (rows.length === 0) {
+      throw new Error('No supported INSERT INTO ... VALUES statements were found.');
+    }
+
+    return rows;
+  }
+}
+
+export const parseSQL = (source: string): DataRow[] => {
+  const cleaned = source.trim();
+
+  if (!cleaned) return [];
+
+  if (/--|\/\*|\*\//.test(cleaned)) {
+    throw new Error('SQL comments are not supported in this version.');
+  }
+
+  return new SQLReader(cleaned).parse();
+};
+
+const quoteIdentifier = (identifier: string): string => {
+  if (!identifier.trim()) throw new Error('SQL table and column names cannot be empty.');
+  return `"${identifier.replace(/"/g, '""')}"`;
+};
+
+const quoteValue = (value: unknown): string => {
+  if (value === null || value === undefined) return 'NULL';
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('Cannot serialize a non-finite number to SQL.');
+    return String(value);
+  }
+  if (typeof value === 'string') {
+    return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\0/g, '\\0').replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
+  }
+
+  throw new Error('Nested objects and arrays must be flattened before SQL export.');
+};
+
+export const serializeSQL = (
+  rows: DataRow[],
+  columns: string[],
+  tableName = 'data'
+): string => {
+  if (rows.length === 0) {
+    throw new Error('There are no records to export to SQL.');
+  }
+
+  if (columns.length === 0) {
+    throw new Error('There are no columns to export to SQL.');
+  }
+
+  const table = tableName.split('.').map(quoteIdentifier).join('.');
+  const columnList = columns.map(quoteIdentifier).join(', ');
+
+  const statements = rows.map((row) => {
+    const values = columns.map((column) => quoteValue(row[column])).join(', ');
+    return `INSERT INTO ${table} (${columnList}) VALUES (${values});`;
+  });
+
+  return statements.join('\n');
+};

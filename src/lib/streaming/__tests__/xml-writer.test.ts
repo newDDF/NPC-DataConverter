@@ -1,0 +1,278 @@
+// @vitest-environment node
+
+import { describe, expect, it } from 'vitest';
+import type { StreamingOutputSink } from '../core/contracts';
+import { XmlWriter } from '../writers/xml-writer';
+
+class MemorySink implements StreamingOutputSink {
+  output = '';
+  closed = false;
+  aborted = false;
+
+  async write(data: string | Uint8Array): Promise<void> {
+    this.output +=
+      typeof data === 'string'
+        ? data
+        : new TextDecoder().decode(data);
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+  }
+
+  async abort(): Promise<void> {
+    this.aborted = true;
+  }
+}
+
+describe('XmlWriter', () => {
+  it('writes multiple batches with one root element', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    await session.write([{ id: 1, name: 'Alice' }]);
+    await session.write([{ id: 2, name: 'Bob' }]);
+    await session.close();
+
+    expect(sink.closed).toBe(true);
+    expect(sink.output).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+        '<records>' +
+        '<record><id>1</id><name>Alice</name></record>' +
+        '<record><id>2</id><name>Bob</name></record>' +
+        '</records>',
+    );
+    expect(sink.output.match(/<records>/g)).toHaveLength(1);
+  });
+
+  it('serializes attributes and nested objects', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    await session.write([
+      {
+        '@id': 'item-1',
+        profile: {
+          name: 'Alice',
+          age: 30,
+        },
+      },
+    ]);
+
+    await session.close();
+
+    expect(sink.output).toContain(
+      '<record id="item-1"><profile><name>Alice</name><age>30</age></profile></record>',
+    );
+  });
+
+  it('serializes arrays as repeated elements', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    await session.write([
+      {
+        tag: ['red', 'green', 'blue'],
+        item: [{ id: 1 }, { id: 2 }],
+      },
+    ]);
+
+    await session.close();
+
+    expect(sink.output).toContain(
+      '<tag>red</tag><tag>green</tag><tag>blue</tag>',
+    );
+    expect(sink.output).toContain(
+      '<item><id>1</id></item><item><id>2</id></item>',
+    );
+  });
+
+  it('serializes mixed text using #text', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    await session.write([
+      {
+        message: {
+          '@lang': 'en',
+          '#text': 'Hello <world>',
+        },
+      },
+    ]);
+
+    await session.close();
+
+    expect(sink.output).toContain(
+      '<message lang="en">Hello &lt;world&gt;</message>',
+    );
+  });
+
+  it('escapes XML special characters in text and attributes', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    await session.write([
+      {
+        '@quote': '"hello" & goodbye',
+        text: `A & B < C > D`,
+      },
+    ]);
+
+    await session.close();
+
+    expect(sink.output).toContain(
+      'quote="&quot;hello&quot; &amp; goodbye"',
+    );
+    expect(sink.output).toContain(
+      '<text>A &amp; B &lt; C &gt; D</text>',
+    );
+  });
+
+  it('writes null and undefined values as empty elements', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    await session.write([
+      {
+        missing: null,
+        empty: undefined,
+      },
+    ]);
+
+    await session.close();
+
+    expect(sink.output).toContain(
+      '<record><missing/><empty/></record>',
+    );
+  });
+
+  it('writes an empty root when no records are provided', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    await session.write([]);
+    await session.close();
+
+    expect(sink.output).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?>\n<records></records>',
+    );
+  });
+
+  it('supports XML 1.0 Unicode element and attribute names', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    await session.write([
+      {
+        '@物料类别': '成品',
+        '母件货品': '101012-01-L',
+        '子件名称': '左钳体毛坯',
+      },
+    ]);
+
+    await session.close();
+
+    expect(sink.output).toContain('<record 物料类别="成品">');
+    expect(sink.output).toContain(
+      '<母件货品>101012-01-L</母件货品>',
+    );
+    expect(sink.output).toContain(
+      '<子件名称>左钳体毛坯</子件名称>',
+    );
+  });
+
+  it('rejects invalid element names without partially writing a batch', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    const before = sink.output;
+
+    await expect(
+      session.write([
+        { valid: 'ok' },
+        { 'invalid name': 'bad' },
+      ]),
+    ).rejects.toThrow('Invalid XML element name: invalid name');
+
+    expect(sink.output).toBe(before);
+    await session.abort();
+  });
+
+  it('rejects invalid attribute names', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    await expect(
+      session.write([{ '@bad name': 'value' }]),
+    ).rejects.toThrow('Invalid XML attribute name: bad name');
+
+    await session.abort();
+  });
+
+  it('rejects circular values without partially writing a batch', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+
+    const before = sink.output;
+
+    await expect(
+      session.write([{ metadata: circular }]),
+    ).rejects.toThrow('Cannot serialize circular data as XML.');
+
+    expect(sink.output).toBe(before);
+    await session.abort();
+  });
+
+  it('rejects BigInt values without partially writing a batch', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    const before = sink.output;
+
+    await expect(
+      session.write([{ id: BigInt(1) }]),
+    ).rejects.toThrow(TypeError);
+
+    expect(sink.output).toBe(before);
+    await session.abort();
+  });
+
+  it('rejects invalid XML control characters', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    await expect(
+      session.write([{ value: 'invalid\u0001value' }]),
+    ).rejects.toThrow('Value contains an invalid XML character.');
+
+    await session.abort();
+  });
+
+  it('rejects writes after close and allows repeated close', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    await session.close();
+    await session.close();
+
+    await expect(
+      session.write([{ id: 1 }]),
+    ).rejects.toThrow('XML writer is already closed');
+
+    expect(sink.output.match(/<\/records>/g)).toHaveLength(1);
+    expect(sink.closed).toBe(true);
+  });
+
+  it('aborts the output sink', async () => {
+    const sink = new MemorySink();
+    const session = await new XmlWriter().create(sink);
+
+    await session.abort();
+
+    expect(sink.aborted).toBe(true);
+    expect(sink.closed).toBe(false);
+  });
+});

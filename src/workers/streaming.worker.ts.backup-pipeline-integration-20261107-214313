@@ -1,0 +1,364 @@
+import Papa from 'papaparse';
+
+type TaskState =
+  | 'active'
+  | 'cancelling'
+  | 'completing'
+  | 'failing'
+  | 'completed'
+  | 'cancelled'
+  | 'error';
+
+type ConversionTask = {
+  file: File;
+  fileName: string;
+  state: TaskState;
+  parser: Papa.Parser | null;
+  writable: FileSystemWritableFileStream | null;
+  rootDir: FileSystemDirectoryHandle | null;
+  setupPromise: Promise<void>;
+  writePromise: Promise<void> | null;
+  cleanupPromise: Promise<void> | null;
+  donePromise: Promise<void>;
+  resolveDone: () => void;
+  chunkIndex: number;
+  totalRows: number;
+  parseErrors: number;
+  rowsWritten: number;
+};
+
+let currentTask: ConversionTask | null = null;
+let startQueue: Promise<void> = Promise.resolve();
+
+self.onmessage = (event: MessageEvent) => {
+  const { type, payload } = event.data;
+
+  if (type === 'CANCEL') {
+    const task = currentTask;
+    if (task) {
+      void cancelTask(task);
+    }
+    return;
+  }
+
+  if (type === 'START_CONVERT') {
+    startQueue = startQueue
+      .then(() => startConversion(payload.file, payload.fileName))
+      .catch((error) => {
+        self.postMessage({
+          status: 'error',
+          message: getErrorMessage(error),
+        });
+      });
+  }
+};
+
+function createTask(file: File, fileName: string): ConversionTask {
+  let resolveDone!: () => void;
+
+  const donePromise = new Promise<void>((resolve) => {
+    resolveDone = resolve;
+  });
+
+  return {
+    file,
+    fileName,
+    state: 'active',
+    parser: null,
+    writable: null,
+    rootDir: null,
+    setupPromise: Promise.resolve(),
+    writePromise: null,
+    cleanupPromise: null,
+    donePromise,
+    resolveDone,
+    chunkIndex: 0,
+    totalRows: 0,
+    parseErrors: 0,
+    rowsWritten: 0,
+  };
+}
+
+function settleTask(task: ConversionTask) {
+  if (currentTask === task) {
+    currentTask = null;
+  }
+
+  task.resolveDone();
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function startConversion(file: File, fileName?: string) {
+  const previousTask = currentTask;
+
+  if (previousTask) {
+    if (previousTask.state === 'active') {
+      await cancelTask(previousTask);
+    } else {
+      await previousTask.donePromise;
+    }
+  }
+
+  const targetFileName =
+    fileName || `converted_${Date.now()}.json`;
+
+  const task = createTask(file, targetFileName);
+  currentTask = task;
+
+  task.setupPromise = (async () => {
+    task.rootDir = await navigator.storage.getDirectory();
+
+    const fileHandle = await task.rootDir.getFileHandle(
+      task.fileName,
+      { create: true },
+    );
+
+    task.writable = await fileHandle.createWritable();
+
+    await task.writable.write('[');
+  })();
+
+  try {
+    await task.setupPromise;
+  } catch (error) {
+    await failTask(task, error);
+    return;
+  }
+
+  if (task.state !== 'active') return;
+
+  self.postMessage({ status: 'started' });
+
+  try {
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+
+      chunk: (results, parser) => {
+        task.parser = parser;
+
+        if (task.state !== 'active') {
+          parser.abort();
+          return;
+        }
+
+        parser.pause();
+
+        void processChunk(task, results, parser);
+      },
+
+      complete: () => {
+        if (task.state !== 'active') return;
+
+        task.state = 'completing';
+        void completeTask(task);
+      },
+
+      error: (error) => {
+        void failTask(task, error);
+      },
+    });
+  } catch (error) {
+    await failTask(task, error);
+  }
+}
+
+async function processChunk(
+  task: ConversionTask,
+  results: Papa.ParseResult<unknown>,
+  parser: Papa.Parser,
+) {
+  try {
+    if (task.state !== 'active') return;
+
+    const chunkData = results.data;
+
+    task.totalRows += chunkData.length;
+    task.parseErrors += results.errors.length;
+
+    if (!task.writable) {
+      throw new Error('Output stream is unavailable.');
+    }
+
+    if (chunkData.length > 0) {
+      const jsonChunk =
+        (task.rowsWritten > 0 ? ',' : '') +
+        chunkData.map((row) => JSON.stringify(row)).join(',');
+
+      const writePromise = task.writable.write(jsonChunk);
+      task.writePromise = writePromise;
+
+      try {
+        await writePromise;
+      } finally {
+        if (task.writePromise === writePromise) {
+          task.writePromise = null;
+        }
+      }
+
+      task.rowsWritten += chunkData.length;
+    }
+
+    if (task.state !== 'active') return;
+
+    task.chunkIndex++;
+
+    self.postMessage({
+      status: 'chunk',
+      chunkIndex: task.chunkIndex,
+      totalRows: task.totalRows,
+      parseErrors: task.parseErrors,
+    });
+
+    parser.resume();
+  } catch (error) {
+    await failTask(task, error);
+  }
+}
+
+async function completeTask(task: ConversionTask) {
+  try {
+    await task.writePromise?.catch(() => undefined);
+
+    if (task.state !== 'completing') return;
+
+    if (!task.writable) {
+      throw new Error('Output stream is unavailable.');
+    }
+
+    await task.writable.write(']');
+    await task.writable.close();
+
+    task.writable = null;
+    task.state = 'completed';
+
+    self.postMessage({
+      status: 'completed',
+      fileName: task.fileName,
+      chunkIndex: task.chunkIndex,
+      totalRows: task.totalRows,
+      parseErrors: task.parseErrors,
+    });
+
+    settleTask(task);
+  } catch (error) {
+    await failTask(task, error);
+  }
+}
+
+async function cancelTask(task: ConversionTask) {
+  
+  if (task.state === 'cancelled' || task.state === 'completed' ||
+      task.state === 'error') {
+        return;
+  }
+
+  if (task.state === 'completing' || task.state === 'failing') {
+        await task.donePromise;
+        return;
+  }
+
+  if (task.state === 'cancelling') {
+        await task.donePromise;
+        return;
+  }
+
+  task.state = 'cancelling';
+
+  if (task.parser) {
+        try {
+      task.parser.abort();
+          } catch {
+          }
+  }
+
+    await task.setupPromise.catch(() => undefined);
+  
+    await task.writePromise?.catch(() => undefined);
+  
+    await cleanupTask(task);
+  
+  task.state = 'cancelled';
+
+    self.postMessage({ status: 'cancelled' });
+
+  settleTask(task);
+  }
+
+async function failTask(task: ConversionTask, error: unknown) {
+  if (
+    task.state === 'cancelled' ||
+    task.state === 'completed' ||
+    task.state === 'error'
+  ) {
+    return;
+  }
+
+  if (task.state === 'cancelling') {
+    await task.donePromise;
+    return;
+  }
+
+  if (task.state === 'failing') {
+    await task.donePromise;
+    return;
+  }
+
+  task.state = 'failing';
+
+  if (task.parser) {
+    try {
+      task.parser.abort();
+    } catch {
+      // Parser may already have stopped.
+    }
+  }
+
+  await task.setupPromise.catch(() => undefined);
+  await task.writePromise?.catch(() => undefined);
+
+  await cleanupTask(task);
+
+  task.state = 'error';
+
+  self.postMessage({
+    status: 'error',
+    message: getErrorMessage(error),
+  });
+
+  settleTask(task);
+}
+
+function cleanupTask(task: ConversionTask): Promise<void> {
+  if (task.cleanupPromise) {
+    return task.cleanupPromise;
+  }
+
+  task.cleanupPromise = (async () => {
+    if (task.writable) {
+      try {
+        await task.writable.abort();
+      } catch {
+        // The writable may already be closed or aborted.
+      }
+
+      task.writable = null;
+    }
+
+    try {
+      const rootDir =
+        task.rootDir || await navigator.storage.getDirectory();
+
+      await rootDir.removeEntry(task.fileName);
+    } catch {
+      // The temporary file may already have been removed.
+    }
+
+    task.parser = null;
+  })();
+
+  return task.cleanupPromise;
+}

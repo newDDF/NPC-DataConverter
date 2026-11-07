@@ -1,0 +1,5 @@
+import StreamingWorkspace from '@/components/streaming/StreamingWorkspace';
+
+export default function StreamingPage() {
+  return <StreamingWorkspace />;
+}

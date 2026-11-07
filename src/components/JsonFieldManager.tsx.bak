@@ -1,0 +1,263 @@
+'use client';
+
+import { useMemo, useState } from 'react';
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  ArrowUp,
+  ArrowDown,
+  FolderOpen,
+  ListTree,
+} from 'lucide-react';
+import type {
+  JsonFieldNode,
+  JsonFieldSelection,
+} from '@/lib/json-fields';
+import {
+  isJsonFieldEffectivelySelected,
+  setJsonFieldSelected,
+  setJsonLevelSelection,
+  reorderJsonFieldNodes,
+} from '@/lib/json-fields';
+
+interface Props {
+  nodes: JsonFieldNode[];
+  selection: JsonFieldSelection;
+  onSelectionChange: (value: JsonFieldSelection) => void;
+  onNodesChange: (value: JsonFieldNode[]) => void;
+}
+
+export default function JsonFieldManager({
+  nodes,
+  selection,
+  onSelectionChange,
+  onNodesChange,
+}: Props) {
+  const [focusPath, setFocusPath] = useState('');
+  const [expanded, setExpanded] = useState<string[]>([]);
+  const [search, setSearch] = useState('');
+
+  const currentNodes = useMemo(() => {
+    if (!focusPath) return nodes;
+    const find = (items: JsonFieldNode[]): JsonFieldNode | undefined => {
+      for (const item of items) {
+        if (item.path === focusPath) return item;
+        const nested = find(item.children);
+        if (nested) return nested;
+      }
+    };
+    return find(nodes)?.children ?? [];
+  }, [nodes, focusPath]);
+
+  const currentLabel = focusPath.split('.').pop()?.replace('[]', '') || 'root';
+  const visibleNodes = currentNodes.filter((node) =>
+    node.key.toLowerCase().includes(search.toLowerCase()) ||
+    node.path.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const toggleExpanded = (path: string) => {
+    setExpanded((previous) =>
+      previous.includes(path)
+        ? previous.filter((item) => item !== path)
+        : [...previous, path]
+    );
+  };
+
+  const updateNodeOrder = (
+    sourcePath: string,
+    targetPath: string,
+    after: boolean
+  ) => {
+    const update = (items: JsonFieldNode[]): JsonFieldNode[] => {
+      if (items.some((item) => item.path === sourcePath) &&
+          items.some((item) => item.path === targetPath)) {
+        return reorderJsonFieldNodes(items, sourcePath, targetPath, after);
+      }
+      return items.map((item) => ({
+        ...item,
+        children: update(item.children),
+      }));
+    };
+    onNodesChange(update(nodes));
+  };
+
+  const moveNode = (index: number, direction: -1 | 1) => {
+    const target = visibleNodes[index + direction];
+    const source = visibleNodes[index];
+    if (!target || !source) return;
+    updateNodeOrder(source.path, target.path, direction === 1);
+  };
+
+  const renderTree = (items: JsonFieldNode[], depth = 0) =>
+    items.map((node) => {
+      const checked = isJsonFieldEffectivelySelected(selection, node.path);
+      const isExpanded = expanded.includes(node.path);
+      const hasChildren = node.children.length > 0;
+
+      return (
+        <div key={node.path}>
+          <div
+            className="flex items-center gap-1 rounded-lg px-1 py-1 hover:bg-slate-100 dark:hover:bg-slate-800"
+            style={{ paddingLeft: `${depth * 14 + 4}px` }}
+          >
+            {hasChildren ? (
+              <button
+                type="button"
+                onClick={() => toggleExpanded(node.path)}
+                className="p-1 text-slate-400"
+                aria-label={isExpanded ? 'Collapse field' : 'Expand field'}
+              >
+                {isExpanded
+                  ? <ChevronDown className="h-3.5 w-3.5" />
+                  : <ChevronRight className="h-3.5 w-3.5" />}
+              </button>
+            ) : (
+              <span className="w-6" />
+            )}
+
+            <button
+              type="button"
+              onClick={() => onSelectionChange(
+                setJsonFieldSelected(selection, node.path, !checked)
+              )}
+              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+            >
+              {checked
+                ? <Check className="h-3.5 w-3.5 shrink-0 text-[#ff6be4]" />
+                : <span className="h-3.5 w-3.5 shrink-0 rounded border border-slate-300 dark:border-slate-600" />}
+              <span className={`truncate font-mono text-[11px] ${
+                checked ? 'text-[#ff6be4]' : 'text-slate-600 dark:text-slate-300'
+              }`}>
+                {node.key}
+              </span>
+              <span className="ml-auto shrink-0 text-[9px] text-slate-400">
+                {node.type}
+              </span>
+            </button>
+
+            {hasChildren && (
+              <button
+                type="button"
+                onClick={() => setFocusPath(node.path)}
+                title="Focus this level"
+                className="rounded p-1 text-slate-400 hover:text-[#ff6be4]"
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
+          {hasChildren && isExpanded && (
+            <div>{renderTree(node.children, depth + 1)}</div>
+          )}
+        </div>
+      );
+    });
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <ListTree className="h-4 w-4 text-[#ff6be4]" />
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+          JSON Field Tree
+        </span>
+        <span className="ml-auto text-[10px] text-slate-400">
+          {Object.values(selection).filter(Boolean).length}/{Object.keys(selection).length}
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2 text-[10px]">
+        <button
+          type="button"
+          onClick={() => setFocusPath('')}
+          className={!focusPath ? 'font-semibold text-[#ff6be4]' : 'text-slate-500'}
+        >
+          root
+        </button>
+        {focusPath && (
+          <>
+            <span className="text-slate-400">/</span>
+            <span className="truncate font-semibold text-[#ff6be4]">{currentLabel}</span>
+            <button
+              type="button"
+              onClick={() => {
+                const parts = focusPath.split('.');
+                parts.pop();
+                setFocusPath(parts.join('.'));
+              }}
+              className="ml-auto rounded border border-slate-200 px-2 py-1 text-slate-500 dark:border-slate-700"
+            >
+              Back
+            </button>
+          </>
+        )}
+      </div>
+
+      <input
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+        placeholder="Search fields..."
+        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs outline-none focus:border-[#ff6be4] dark:border-slate-700 dark:bg-slate-800"
+      />
+
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => onSelectionChange(
+            setJsonLevelSelection(selection, currentNodes, true)
+          )}
+          className="flex-1 rounded-lg border border-slate-200 bg-slate-100 py-1 text-[10px] dark:border-slate-700 dark:bg-slate-800"
+        >
+          Select Level
+        </button>
+        <button
+          type="button"
+          onClick={() => onSelectionChange(
+            setJsonLevelSelection(selection, currentNodes, false)
+          )}
+          className="flex-1 rounded-lg border border-slate-200 bg-slate-100 py-1 text-[10px] dark:border-slate-700 dark:bg-slate-800"
+        >
+          Deselect Level
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain">
+        {focusPath
+          ? visibleNodes.map((node, index) => (
+              <div key={node.path} className="group flex items-center">
+                <div className="min-w-0 flex-1">
+                  {renderTree([node])}
+                </div>
+                <div className="flex opacity-60 group-hover:opacity-100">
+                  <button
+                    type="button"
+                    disabled={index === 0}
+                    onClick={() => moveNode(index, -1)}
+                    className="p-1 text-slate-400 disabled:opacity-20"
+                    aria-label="Move field up"
+                  >
+                    <ArrowUp className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={index === visibleNodes.length - 1}
+                    onClick={() => moveNode(index, 1)}
+                    className="p-1 text-slate-400 disabled:opacity-20"
+                    aria-label="Move field down"
+                  >
+                    <ArrowDown className="h-3 w-3" />
+                  </button>
+                </div>
+              </div>
+            ))
+          : renderTree(visibleNodes)}
+        {visibleNodes.length === 0 && (
+          <p className="py-6 text-center text-xs text-slate-400">
+            No fields found.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,29 @@
+export type StreamingWorkerRequest = {
+  type: 'cancel';
+};
+
+export type StreamingWorkerResponse =
+  | {
+      type: 'progress';
+      chunks: number;
+      rows: number;
+      parseErrors: number;
+      processedBytes: number;
+      totalBytes: number;
+      outputBytes: number;
+    }
+  | {
+      type: 'complete';
+      chunks: number;
+      rows: number;
+      parseErrors: number;
+      outputBytes: number;
+      fileName: string;
+    }
+  | {
+      type: 'cancelled';
+    }
+  | {
+      type: 'error';
+      message: string;
+    };

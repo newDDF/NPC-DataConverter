@@ -1,0 +1,187 @@
+import { describe, expect, it } from 'vitest';
+import {
+  flattenRecord,
+  normalizeRecords,
+} from '../core/records';
+
+describe('normalizeRecords', () => {
+  it('returns an empty array for null and undefined', () => {
+    expect(normalizeRecords(null)).toEqual([]);
+    expect(normalizeRecords(undefined)).toEqual([]);
+  });
+
+  it('wraps primitive values', () => {
+    expect(normalizeRecords('hello')).toEqual([
+      { value: 'hello' },
+    ]);
+    expect(normalizeRecords(42)).toEqual([
+      { value: 42 },
+    ]);
+    expect(normalizeRecords(true)).toEqual([
+      { value: true },
+    ]);
+  });
+
+  it('wraps arrays as record values', () => {
+    expect(normalizeRecords([1, 2])).toEqual([
+      { value: 1 },
+      { value: 2 },
+    ]);
+  });
+
+  it('preserves object records', () => {
+    const record = { id: 1, name: 'Alice' };
+
+    expect(normalizeRecords(record)).toEqual([record]);
+  });
+
+  it('normalizes mixed arrays', () => {
+    expect(
+      normalizeRecords([
+        { id: 1 },
+        'hello',
+        42,
+        null,
+        [1, 2],
+      ]),
+    ).toEqual([
+      { id: 1 },
+      { value: 'hello' },
+      { value: 42 },
+      { value: null },
+      { value: [1, 2] },
+    ]);
+  });
+});
+
+describe('flattenRecord', () => {
+  it('preserves top-level primitive fields', () => {
+    expect(
+      flattenRecord({
+        id: 1,
+        name: 'Alice',
+        active: true,
+        optional: null,
+      }),
+    ).toEqual({
+      id: 1,
+      name: 'Alice',
+      active: true,
+      optional: null,
+    });
+  });
+
+  it('flattens nested objects using dotted paths', () => {
+    expect(
+      flattenRecord({
+        user: {
+          name: 'Alice',
+          profile: {
+            age: 30,
+          },
+        },
+      }),
+    ).toEqual({
+      'user.name': 'Alice',
+      'user.profile.age': 30,
+    });
+  });
+
+  it('serializes arrays as JSON strings', () => {
+    expect(
+      flattenRecord({
+        tags: ['a', 'b'],
+        items: [{ id: 1 }, { id: 2 }],
+        empty: [],
+      }),
+    ).toEqual({
+      tags: '["a","b"]',
+      items: '[{"id":1},{"id":2}]',
+      empty: '[]',
+    });
+  });
+
+  it('preserves Date values', () => {
+    const date = new Date('2026-01-02T03:04:05.000Z');
+
+    expect(flattenRecord({ createdAt: date })).toEqual({
+      createdAt: date,
+    });
+  });
+
+  it('handles empty records and empty nested objects', () => {
+    expect(flattenRecord({})).toEqual({});
+    expect(flattenRecord({ profile: {} })).toEqual({});
+  });
+
+  it('preserves prototype-sensitive field names', () => {
+    const record = Object.defineProperty({}, '__proto__', {
+      value: 'safe-value',
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+
+    const result = flattenRecord(record);
+
+    expect(Object.hasOwn(result, '__proto__')).toBe(true);
+    expect(result['__proto__']).toBe('safe-value');
+  });
+
+  it('preserves inherited property names as own fields', () => {
+    const record = Object.fromEntries([
+      ['constructor', 'constructor-value'],
+      ['toString', 'toString-value'],
+      ['hasOwnProperty', 'hasOwnProperty-value'],
+    ]);
+
+    const result = flattenRecord(record);
+
+    expect(result).toMatchObject({
+      constructor: 'constructor-value',
+      toString: 'toString-value',
+      hasOwnProperty: 'hasOwnProperty-value',
+    });
+
+    expect(Object.hasOwn(result, 'constructor')).toBe(true);
+    expect(Object.hasOwn(result, 'toString')).toBe(true);
+    expect(Object.hasOwn(result, 'hasOwnProperty')).toBe(true);
+  });
+
+  it('uses the later field when flattened paths collide', () => {
+    const nestedFirst = {
+      user: { name: 'nested' },
+      'user.name': 'flat',
+    };
+
+    const flatFirst = {
+      'user.name': 'flat',
+      user: { name: 'nested' },
+    };
+
+    expect(flattenRecord(nestedFirst)['user.name']).toBe('flat');
+    expect(flattenRecord(flatFirst)['user.name']).toBe('nested');
+  });
+
+  it('handles deeply nested records without overflowing the call stack', () => {
+    const depth = 5000;
+    let record: Record<string, unknown> = { value: 'deep-value' };
+
+    for (let index = 0; index < depth; index += 1) {
+      record = { nested: record };
+    }
+
+    const result = flattenRecord(record);
+    const expectedPath = `${'nested.'.repeat(depth)}value`;
+
+    expect(result[expectedPath]).toBe('deep-value');
+  });
+
+  it('supports a custom path prefix', () => {
+    expect(
+      flattenRecord({ name: 'Alice' }, 'user'),
+    ).toEqual({
+      'user.name': 'Alice',
+    });
+  });
+});

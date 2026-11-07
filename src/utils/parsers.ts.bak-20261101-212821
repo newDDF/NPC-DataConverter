@@ -1,0 +1,404 @@
+import Papa from 'papaparse';
+import { dump, load } from 'js-yaml';
+import * as XLSX from 'xlsx';
+import type { DataFormat } from '@/types/converter';
+
+type DataRow = Record<string, unknown>;
+
+const normalizeRows = (value: unknown): DataRow[] => {
+  if (value === null || value === undefined) return [];
+  const values = Array.isArray(value) ? value : [value];
+
+  return values.map((item) => {
+    if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+      return item as DataRow;
+    }
+    return { value: item };
+  });
+};
+
+const parseMarkdownTable = (text: string): DataRow[] => {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('|') && line.endsWith('|'));
+
+  if (lines.length < 2) {
+    throw new Error('No valid Markdown table was found.');
+  }
+
+  const splitRow = (line: string) =>
+    line
+      .slice(1, -1)
+      .split(/(?<!\\)\|/)
+      .map((cell) => cell.trim().replace(/\\\|/g, '|'));
+
+  const headers = splitRow(lines[0]);
+  const separator = splitRow(lines[1]);
+
+  if (!separator.every((cell) => /^:?-{3,}:?$/.test(cell))) {
+    throw new Error('Invalid Markdown table separator.');
+  }
+
+  return lines.slice(2).map((line) => {
+    const cells = splitRow(line);
+    const row: DataRow = {};
+    headers.forEach((header, index) => {
+      row[header] = cells[index] ?? '';
+    });
+    return row;
+  });
+};
+
+export const flattenObject = (
+  obj: Record<string, unknown>,
+  prefix = ''
+): Record<string, unknown> => {
+  return Object.keys(obj).reduce((acc: Record<string, unknown>, key) => {
+    const path = prefix ? `${prefix}.${key}` : key;
+    const value = obj[key];
+
+    if (
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      !(value instanceof Date)
+    ) {
+      Object.assign(acc, flattenObject(value as Record<string, unknown>, path));
+    } else if (Array.isArray(value)) {
+      acc[path] = JSON.stringify(value);
+    } else {
+      acc[path] = value;
+    }
+
+    return acc;
+  }, {});
+};
+
+export const detectFormat = (text: string): DataFormat => {
+  const trimmed = text.trim();
+  if (!trimmed) return 'json';
+
+  try {
+    JSON.parse(trimmed);
+    return 'json';
+  } catch {
+    // Continue with other formats.
+  }
+
+  if (trimmed.startsWith('<') && trimmed.endsWith('>')) return 'xml';
+
+  if (
+    trimmed.split(/\r?\n/).filter((line) => line.trim()).length >= 2 &&
+    trimmed.split(/\r?\n/).filter((line) => line.trim())[0].trim().startsWith('|')
+  ) {
+    return 'md';
+  }
+
+  const firstLine = trimmed.split(/\r?\n/)[0];
+  if (firstLine.includes(',')) return 'csv';
+
+  try {
+    const parsed = load(trimmed);
+    if (parsed !== undefined && typeof parsed === 'object') return 'yaml';
+  } catch {
+    // Unrecognized input will be treated as CSV.
+  }
+
+  if (/^[\w.-]+\s*:/.test(trimmed)) return 'yaml';
+  return 'csv';
+};
+
+export const xmlToObject = (xmlText: string): unknown => {
+  if (typeof DOMParser === 'undefined') {
+    throw new Error('XML parsing is only available in a browser environment.');
+  }
+
+  const document = new DOMParser().parseFromString(xmlText, 'application/xml');
+  const parserError = document.querySelector('parsererror');
+
+  if (parserError) {
+    throw new Error(`Invalid XML: ${parserError.textContent || 'Parser error'}`);
+  }
+
+  const convertNode = (element: Element): unknown => {
+    const result: Record<string, unknown> = {};
+
+    Array.from(element.attributes).forEach((attribute) => {
+      result[`@${attribute.name}`] = attribute.value;
+    });
+
+    const childElements = Array.from(element.children);
+    const textContent = Array.from(element.childNodes)
+      .filter((node) => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.textContent ?? '')
+      .join('')
+      .trim();
+
+    if (childElements.length === 0) {
+      if (Object.keys(result).length === 0) return textContent;
+      if (textContent) result['#text'] = textContent;
+      return result;
+    }
+
+    if (textContent) result['#text'] = textContent;
+
+    childElements.forEach((child) => {
+      const name = child.tagName;
+      const value = convertNode(child);
+
+      if (Object.prototype.hasOwnProperty.call(result, name)) {
+        const existing = result[name];
+        result[name] = Array.isArray(existing) ? [...existing, value] : [existing, value];
+      } else {
+        result[name] = value;
+      }
+    });
+
+    return result;
+  };
+
+  return convertNode(document.documentElement);
+};
+
+const escapeXml = (value: unknown): string =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+
+const safeXmlName = (name: string): string => {
+  const safe = name.replace(/[^A-Za-z0-9_.:-]/g, '_');
+  return /^[A-Za-z_]/.test(safe) ? safe : `_${safe}`;
+};
+
+export const objectToXML = (
+  value: unknown,
+  rootTag = 'root',
+  itemTag = 'item',
+  indentSize = 2
+): string => {
+  const indent = ' '.repeat(Math.max(0, Math.min(indentSize, 8)));
+
+  const build = (item: unknown, tag: string, depth: number): string => {
+    const name = safeXmlName(tag);
+    const pad = indent.repeat(depth);
+
+    if (item === null || item === undefined) {
+      return `${pad}<${name}/>`;
+    }
+
+    if (Array.isArray(item)) {
+      if (item.length === 0) {
+        return `${pad}<${name}/>`;
+      }
+
+      const childXml = item
+        .map((entry) => build(entry, 'item', depth + 1))
+        .join('\n');
+
+      return `${pad}<${name}>\n${childXml}\n${pad}</${name}>`;
+    }
+
+    if (typeof item === 'object' && !(item instanceof Date)) {
+      const record = item as Record<string, unknown>;
+      const attributes = Object.entries(record)
+        .filter(([key]) => key.startsWith('@'))
+        .map(([key, val]) => ` ${safeXmlName(key.slice(1))}="${escapeXml(val)}"`)
+        .join('');
+
+      const children = Object.entries(record).filter(
+        ([key]) => !key.startsWith('@') && key !== '#text'
+      );
+      const text = record['#text'];
+
+      if (children.length === 0 && (text === undefined || text === null || text === '')) {
+        return `${pad}<${name}${attributes}/>`;
+      }
+
+      if (children.length === 0) {
+        return `${pad}<${name}${attributes}>${escapeXml(text ?? '')}</${name}>`;
+      }
+
+      const childXml = children
+        .map(([key, child]) => build(child, key, depth + 1))
+        .join('\n');
+      const textXml = text ? escapeXml(text) : '';
+
+      return `${pad}<${name}${attributes}>\n${textXml ? `${indent.repeat(depth + 1)}${textXml}\n` : ''}${childXml}\n${pad}</${name}>`;
+    }
+
+    return `${pad}<${name}>${escapeXml(item)}</${name}>`;
+  };
+
+  const body = Array.isArray(value)
+    ? value.map((item) => build(item, itemTag, 1)).join('\n')
+    : build(value, rootTag, 0);
+
+  if (Array.isArray(value)) {
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<${safeXmlName(rootTag)}>\n${body}\n</${safeXmlName(rootTag)}>`;
+  }
+
+  return `<?xml version="1.0" encoding="UTF-8"?>\n${body}`;
+};
+
+const cellValue = (value: unknown): string => {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+};
+
+export const parseTextData = (raw: string, format: DataFormat): DataRow[] => {
+  if (!raw.trim()) return [];
+
+  let parsed: unknown;
+
+  switch (format) {
+    case 'json':
+      parsed = JSON.parse(raw);
+      break;
+
+    case 'csv': {
+      let emptyCellMarker = '__NPC_EMPTY_CELL__';
+      while (raw.includes(emptyCellMarker)) {
+        emptyCellMarker += '_';
+      }
+
+      const result = Papa.parse<DataRow>(raw, {
+        header: true,
+        skipEmptyLines: 'greedy',
+        transform: (value) => value === '' ? emptyCellMarker : value,
+        dynamicTyping: true,
+      });
+
+      if (result.errors.length > 0) {
+        throw new Error(result.errors[0].message);
+      }
+
+      parsed = result.data.map((row) =>
+        Object.fromEntries(
+          Object.entries(row).map(([key, value]) => [
+            key,
+            value === emptyCellMarker ? '' : value,
+          ])
+        )
+      );
+      break;
+    }
+
+    case 'yaml':
+      parsed = load(raw);
+      break;
+
+    case 'xml': {
+      const xmlValue = xmlToObject(raw);
+
+      if (
+        xmlValue !== null &&
+        typeof xmlValue === 'object' &&
+        !Array.isArray(xmlValue)
+      ) {
+        const entries = Object.entries(xmlValue as Record<string, unknown>);
+
+        if (entries.length === 1) {
+          const child = entries[0][1];
+
+          if (child !== null && typeof child === 'object') {
+            parsed = child;
+            break;
+          }
+        }
+      }
+
+      parsed = xmlValue;
+      break;
+    }
+
+    case 'md':
+      parsed = parseMarkdownTable(raw);
+      break;
+
+    case 'excel':
+      throw new Error('Upload an .xlsx or .xls file to import Excel data.');
+
+    default:
+      throw new Error(`Unsupported input format: ${format}`);
+  }
+
+  return normalizeRows(parsed);
+};
+
+export const parseExcelBuffer = (buffer: ArrayBuffer): DataRow[] => {
+  const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
+  const firstSheetName = workbook.SheetNames[0];
+
+  if (!firstSheetName) {
+    throw new Error('The Excel workbook does not contain any worksheets.');
+  }
+
+  const worksheet = workbook.Sheets[firstSheetName];
+  return XLSX.utils.sheet_to_json<DataRow>(worksheet, { defval: null, raw: true });
+};
+
+export const serializeRows = (
+  rows: DataRow[],
+  format: DataFormat,
+  columns?: string[]
+): string => {
+  const keys = columns?.length
+    ? columns
+    : Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+
+  switch (format) {
+    case 'json':
+      return JSON.stringify(rows, null, 2);
+
+    case 'csv':
+      return Papa.unparse(
+        rows.map((row) =>
+          Object.fromEntries(keys.map((key) => [key, cellValue(row[key])]))
+        ),
+        { columns: keys, skipEmptyLines: false }
+      );
+
+    case 'yaml':
+      return dump(rows, { noRefs: true, lineWidth: -1, sortKeys: false });
+
+    case 'xml':
+      return objectToXML(rows, 'root', 'record', 2);
+
+    case 'md': {
+      const escapeCell = (value: unknown) =>
+        cellValue(value).replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
+      const header = `| ${keys.map(escapeCell).join(' | ')} |`;
+      const separator = `| ${keys.map(() => '---').join(' | ')} |`;
+      const body = rows.map(
+        (row) => `| ${keys.map((key) => escapeCell(row[key])).join(' | ')} |`
+      );
+      return [header, separator, ...body].join('\n');
+    }
+
+    case 'excel':
+      throw new Error('Use createExcelBlob to generate an Excel workbook.');
+
+    default:
+      throw new Error(`Unsupported output format: ${format}`);
+  }
+};
+
+export const createExcelBlob = (rows: DataRow[]): Blob => {
+  const worksheet = XLSX.utils.json_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Data');
+
+  const output = XLSX.write(workbook, {
+    bookType: 'xlsx',
+    type: 'array',
+  });
+
+  return new Blob([output], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+};

@@ -1,0 +1,148 @@
+import Papa from 'papaparse';
+import type {
+  ReaderBatch,
+  ReaderOptions,
+  StreamingReader,
+} from '../core/contracts';
+
+type QueueItem =
+  | { value: ReaderBatch }
+  | { done: true }
+  | { error: Error };
+
+class AsyncBatchQueue {
+  private items: QueueItem[] = [];
+  private waiters: Array<(item: QueueItem) => void> = [];
+  private ended = false;
+
+  push(item: QueueItem): void {
+    if (this.ended) return;
+
+    const waiter = this.waiters.shift();
+
+    if (waiter) {
+      waiter(item);
+    } else {
+      this.items.push(item);
+    }
+  }
+
+  next(): Promise<QueueItem> {
+    const item = this.items.shift();
+
+    if (item) {
+      return Promise.resolve(item);
+    }
+
+    return new Promise((resolve) => {
+      this.waiters.push(resolve);
+    });
+  }
+
+  finish(): void {
+    if (this.ended) return;
+    this.ended = true;
+    this.resolveWaiter({ done: true });
+  }
+
+  fail(error: Error): void {
+    if (this.ended) return;
+    this.ended = true;
+    this.resolveWaiter({ error });
+  }
+
+  private resolveWaiter(item: QueueItem): void {
+    const waiter = this.waiters.shift();
+
+    if (waiter) {
+      waiter(item);
+    } else {
+      this.items.push(item);
+    }
+  }
+}
+
+export class CsvReader implements StreamingReader {
+  readonly format = 'csv' as const;
+
+  async *read(
+    file: File,
+    options: ReaderOptions = {},
+  ): AsyncIterable<ReaderBatch> {
+    const queue = new AsyncBatchQueue();
+    const signal = options.signal;
+    const parserRef: { current: Papa.Parser | null } = {
+      current: null,
+    };
+    let aborted = false;
+    let finished = false;
+
+    const abort = () => {
+      aborted = true;
+      parserRef.current?.abort();
+      queue.finish();
+    };
+
+    if (signal?.aborted) {
+      throw new DOMException('Conversion aborted', 'AbortError');
+    }
+
+    signal?.addEventListener('abort', abort, { once: true });
+
+    Papa.parse<Record<string, unknown>>(file, {
+      header: true,
+      dynamicTyping: true,
+      skipEmptyLines: true,
+      chunkSize: 1024 * 1024,
+      chunk(results, streamParser) {
+        parserRef.current = streamParser;
+        streamParser.pause();
+
+        queue.push({
+          value: {
+            rows: results.data,
+            parseErrors: results.errors.length,
+            processedBytes: 0,
+          },
+        });
+      },
+      complete() {
+        finished = true;
+        queue.finish();
+      },
+      error(error) {
+        finished = true;
+        queue.fail(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      },
+    });
+
+    try {
+      while (true) {
+        const item = await queue.next();
+
+        if ('error' in item) {
+          throw item.error;
+        }
+
+        if ('done' in item) {
+          break;
+        }
+
+        yield item.value;
+
+        if (!aborted) {
+          parserRef.current?.resume();
+        }
+      }
+    } finally {
+      signal?.removeEventListener('abort', abort);
+
+      if (!finished) {
+        aborted = true;
+        parserRef.current?.abort();
+      }
+    }
+  }
+}

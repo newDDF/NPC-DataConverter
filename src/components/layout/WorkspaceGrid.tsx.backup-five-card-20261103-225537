@@ -1,0 +1,138 @@
+'use client';
+
+import React, { useEffect, useState } from 'react';
+import ReactGridLayout, { WidthProvider } from 'react-grid-layout';
+import type { Layout } from 'react-grid-layout';
+
+const GridLayout = WidthProvider(ReactGridLayout);
+
+const STORAGE_KEY = 'npc-dataconverter-workspace-grid-v2';
+
+const DEFAULT_LAYOUT: Layout[] = [
+  { i: 'input', x: 0, y: 0, w: 6, h: 20, minW: 4, minH: 14 },
+  { i: 'output', x: 6, y: 0, w: 6, h: 20, minW: 4, minH: 14 },
+];
+
+interface WorkspaceGridProps {
+  children: React.ReactNode;
+  className?: string;
+}
+
+export default function WorkspaceGrid({
+  children,
+  className = '',
+}: WorkspaceGridProps) {
+  const cards = React.Children.toArray(children).slice(0, 2);
+  const [layout, setLayout] = useState<Layout[]>(DEFAULT_LAYOUT);
+  const [desktop, setDesktop] = useState(false);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 1024px)');
+    const update = () => setDesktop(media.matches);
+
+    update();
+    media.addEventListener('change', update);
+
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as Layout[];
+        const valid =
+          Array.isArray(parsed) &&
+          parsed.length === 2 &&
+          parsed.some((item) => item.i === 'input') &&
+          parsed.some((item) => item.i === 'output');
+
+        if (valid) {
+          setLayout(
+            parsed.map((item) => ({
+              ...item,
+              x: Math.max(0, Math.min(11, Number(item.x) || 0)),
+              y: Math.max(0, Number(item.y) || 0),
+              w: Math.max(4, Math.min(12, Number(item.w) || 6)),
+              h: Math.max(14, Math.min(36, Number(item.h) || 20)),
+              minW: 4,
+              minH: 14,
+            }))
+          );
+        }
+      }
+    } catch {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+
+    setReady(true);
+    return () => media.removeEventListener('change', update);
+  }, []);
+
+  useEffect(() => {
+    if (!desktop) return;
+
+    document
+      .querySelectorAll<HTMLElement>('[data-workspace-card] > :first-child > :first-child')
+      .forEach((header) => {
+        header.classList.add('workspace-drag-handle');
+      });
+  }, [desktop, ready]);
+
+  const handleLayoutChange = (nextLayout: Layout[]) => {
+    setLayout(nextLayout);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(nextLayout));
+    } catch {
+      // Ignore storage failures.
+    }
+  };
+
+  const resetLayout = () => {
+    setLayout(DEFAULT_LAYOUT);
+    localStorage.removeItem(STORAGE_KEY);
+  };
+
+  if (!ready || !desktop) {
+    return (
+      <div className={className}>
+        <div className="grid grid-cols-1 gap-6">{cards}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={className}>
+      <div className="mb-2 flex justify-end">
+        <button
+          type="button"
+          onClick={resetLayout}
+          className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:border-pink-400 hover:text-pink-500 transition-colors"
+        >
+          Reset Layout
+        </button>
+      </div>
+
+      <GridLayout
+        className="workspace-grid"
+        layout={layout}
+        cols={12}
+        rowHeight={30}
+        margin={[16, 16]}
+        containerPadding={[0, 0]}
+        compactType="vertical"
+        preventCollision={false}
+        allowOverlap={false}
+        isDraggable
+        isResizable
+        draggableHandle=".workspace-drag-handle"
+        resizeHandles={['s', 'e', 'w', 'n', 'se', 'sw', 'ne', 'nw']}
+        onLayoutChange={handleLayoutChange}
+      >
+        <div key="input" data-workspace-card="input" className="min-w-0">
+          {cards[0]}
+        </div>
+        <div key="output" data-workspace-card="output" className="min-w-0">
+          {cards[1]}
+        </div>
+      </GridLayout>
+    </div>
+  );
+}

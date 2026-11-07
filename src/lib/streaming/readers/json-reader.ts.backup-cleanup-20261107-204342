@@ -1,0 +1,131 @@
+import { JSONParser } from '@streamparser/json';
+import type {
+  ReaderBatch,
+  ReaderOptions,
+  StreamingReader,
+} from '../core/contracts';
+import { normalizeRecords } from '../core/records';
+
+export class JsonReader implements StreamingReader {
+  readonly format = 'json' as const;
+
+  async *read(
+    file: File,
+    options: ReaderOptions = {},
+  ): AsyncIterable<ReaderBatch> {
+    const signal = options.signal;
+    const batchSize = options.batchSize ?? 1000;
+    const fileReader = file.stream().getReader();
+    const decoder = new TextDecoder();
+
+    let parser: JSONParser | null = null;
+    let parserError: Error | null = null;
+    let pendingRows: Record<string, unknown>[] = [];
+    let processedBytes = 0;
+    let pendingBytes = 0;
+    let initialized = false;
+
+    const initializeParser = (firstCharacter: string) => {
+      const isArray = firstCharacter === '[';
+
+      parser = new JSONParser({
+        paths: [isArray ? '$.*' : '$'],
+        keepStack: false,
+      });
+
+      parser.onValue = ({ value }) => {
+        pendingRows.push(...normalizeRecords(value));
+      };
+
+      parser.onError = (error) => {
+        parserError = error;
+      };
+
+      initialized = true;
+    };
+
+    const throwIfAborted = () => {
+      if (signal?.aborted) {
+        throw new DOMException('Conversion aborted', 'AbortError');
+      }
+    };
+
+    const throwParserError = () => {
+      if (parserError) {
+        throw parserError;
+      }
+    };
+
+    const flushBatches = function* (): Generator<ReaderBatch> {
+      while (pendingRows.length > 0) {
+        const rows = pendingRows.splice(0, batchSize);
+
+        yield {
+          rows,
+          parseErrors: 0,
+          processedBytes: pendingBytes,
+        };
+
+        pendingBytes = 0;
+      }
+    };
+
+    const processText = (text: string) => {
+      if (!text) return;
+
+      if (!initialized) {
+        const firstCharacter = text.match(/\S/)?.[0];
+
+        if (!firstCharacter) return;
+
+        initializeParser(firstCharacter);
+      }
+
+      parser!.write(text);
+      throwParserError();
+    };
+
+    try {
+      throwIfAborted();
+
+      while (true) {
+        throwIfAborted();
+
+        const { done, value } = await fileReader.read();
+
+        throwIfAborted();
+
+        if (done) break;
+
+        processedBytes += value.byteLength;
+        pendingBytes += value.byteLength;
+
+        processText(decoder.decode(value, { stream: true }));
+        throwParserError();
+
+        yield* flushBatches();
+      }
+
+      processText(decoder.decode());
+      throwParserError();
+
+      if (!initialized) {
+        throw new Error('JSON input is empty');
+      }
+
+      if (!parser!.isEnded) {
+        parser!.end();
+      }
+
+      throwParserError();
+
+      yield* flushBatches();
+    } finally {
+      if (signal?.aborted) {
+        await fileReader.cancel().catch(() => undefined);
+      }
+
+      fileReader.releaseLock();
+    }
+  }
+}

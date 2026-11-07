@@ -1,0 +1,166 @@
+@import "tailwindcss";
+@import "react-grid-layout/css/styles.css";
+@import "react-resizable/css/styles.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  body {
+    @apply bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 antialiased;
+  }
+}
+
+
+/* Prism.js syntax highlighting — Blush Rose */
+@layer components {
+  .code-preview .token.comment,
+  .code-preview .token.prolog,
+  .code-preview .token.doctype {
+    color: #b18b9f;
+    font-style: italic;
+  }
+
+  .code-preview .token.property,
+  .code-preview .token.tag,
+  .code-preview .token.selector,
+  .code-preview .token.attr-name {
+    color: #b34f83;
+  }
+
+  .code-preview .token.string,
+  .code-preview .token.attr-value,
+  .code-preview .token.inserted {
+    color: #648b75;
+  }
+
+  .code-preview .token.number,
+  .code-preview .token.boolean,
+  .code-preview .token.constant,
+  .code-preview .token.symbol {
+    color: #9b72bd;
+  }
+
+  .code-preview .token.keyword,
+  .code-preview .token.atrule {
+    color: #c05b85;
+  }
+
+  .code-preview .token.function,
+  .code-preview .token.class-name {
+    color: #9865b5;
+  }
+
+  .code-preview .token.punctuation,
+  .code-preview .token.operator {
+    color: #9b8291;
+  }
+
+  .code-preview .token.title,
+  .code-preview .token.bold {
+    color: #a64d80;
+    font-weight: 700;
+  }
+
+  .code-preview .token.italic {
+    font-style: italic;
+  }
+
+  .code-preview .token.url,
+  .code-preview .token.link {
+    color: #8d6ab3;
+    text-decoration: underline;
+  }
+
+  .code-preview .token.important,
+  .code-preview .token.deleted {
+    color: #dc6b98;
+  }
+
+  .dark .code-preview .token.comment,
+  .dark .code-preview .token.prolog,
+  .dark .code-preview .token.doctype {
+    color: #9e8294;
+  }
+
+  .dark .code-preview .token.property,
+  .dark .code-preview .token.tag,
+  .dark .code-preview .token.selector,
+  .dark .code-preview .token.attr-name {
+    color: #f0a6cc;
+  }
+
+  .dark .code-preview .token.string,
+  .dark .code-preview .token.attr-value,
+  .dark .code-preview .token.inserted {
+    color: #a6d6b8;
+  }
+
+  .dark .code-preview .token.number,
+  .dark .code-preview .token.boolean,
+  .dark .code-preview .token.constant,
+  .dark .code-preview .token.symbol {
+    color: #d0b0f2;
+  }
+
+  .dark .code-preview .token.keyword,
+  .dark .code-preview .token.atrule {
+    color: #f2a0c5;
+  }
+
+  .dark .code-preview .token.function,
+  .dark .code-preview .token.class-name {
+    color: #c9a6f0;
+  }
+
+  .dark .code-preview .token.punctuation,
+  .dark .code-preview .token.operator {
+    color: #c8b4c2;
+  }
+
+  .dark .code-preview .token.title,
+  .dark .code-preview .token.bold {
+    color: #f0a6cc;
+  }
+
+  .dark .code-preview .token.url,
+  .dark .code-preview .token.link {
+    color: #c9a6f0;
+  }
+
+  .dark .code-preview .token.important,
+  .dark .code-preview .token.deleted {
+    color: #f28bb8;
+  }
+}
+
+
+.workspace-grid {
+  width: 100%;
+}
+
+.workspace-grid > .react-grid-item {
+  min-width: 0;
+}
+
+.workspace-grid .workspace-drag-handle {
+  cursor: grab;
+  user-select: none;
+}
+
+.workspace-grid .workspace-drag-handle:active {
+  cursor: grabbing;
+}
+
+.workspace-grid .react-resizable-handle {
+  z-index: 30;
+}
+
+.workspace-grid .react-resizable-handle::after {
+  border-color: #ff6be4 !important;
+}
+
+@media (max-width: 1023px) {
+  .workspace-grid {
+    display: block;
+  }
+}

@@ -1,0 +1,210 @@
+'use client';
+
+import { useRef } from 'react';
+import {
+  Upload, Layers, Play, Download, Trash2, ChevronDown,
+  Clock3, LoaderCircle, CheckCircle2, AlertCircle, FilePlus2,
+} from 'lucide-react';
+import type { BatchTask } from '@/types/batch';
+import type { DataFormat } from '@/types/converter';
+
+const formats: DataFormat[] = ['json', 'csv', 'excel', 'xml', 'yaml', 'md'];
+
+function sizeLabel(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+function Status({ task }: { task: BatchTask }) {
+  if (task.status === 'completed') return <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />;
+  if (task.status === 'processing') return <LoaderCircle className="w-3.5 h-3.5 animate-spin text-blue-500" />;
+  if (task.status === 'failed') return <AlertCircle className="w-3.5 h-3.5 text-rose-500" />;
+  return <Clock3 className="w-3.5 h-3.5 text-slate-400" />;
+}
+
+interface SharedProps {
+  tasks: BatchTask[];
+  activeTaskId: string | null;
+  onSelect: (id: string) => void;
+  onRemove: (id: string) => void;
+  onDownload: (task: BatchTask) => void;
+}
+
+interface InputProps extends SharedProps {
+  open: boolean;
+  onToggle: () => void;
+  onAddFiles: (files: FileList | File[]) => void;
+  targetFormat: DataFormat;
+  onTargetFormatChange: (format: DataFormat) => void;
+  onStartAll: () => void;
+  isRunning: boolean;
+  completedCount: number;
+  onClearCompleted: () => void;
+}
+
+export function BatchInputPanel(props: InputProps) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const {
+    open, onToggle, tasks, activeTaskId, onSelect, onRemove, onAddFiles,
+    targetFormat, onTargetFormatChange, onStartAll, isRunning,
+    completedCount, onClearCompleted,
+  } = props;
+
+  return (
+    <div className="border-b border-slate-200 dark:border-slate-800">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full px-4 py-2.5 flex items-center justify-between text-xs hover:bg-slate-50 dark:hover:bg-slate-800/50"
+      >
+        <span className="flex items-center gap-2 font-semibold text-slate-600 dark:text-slate-300">
+          <Layers className="w-3.5 h-3.5 text-[#ff6be4]" />
+          Batch files
+          <span className="text-slate-400 font-normal">{tasks.length} files</span>
+        </span>
+        <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3 space-y-3 bg-slate-50/70 dark:bg-slate-950/30">
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              ref={fileRef}
+              type="file"
+              multiple
+              accept=".json,.csv,.xml,.yaml,.yml,.md,.xlsx,.xls"
+              className="hidden"
+              onChange={(event) => {
+                if (event.currentTarget.files?.length) onAddFiles(event.currentTarget.files);
+                event.currentTarget.value = '';
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold flex items-center gap-1.5 hover:bg-white dark:hover:bg-slate-800"
+            >
+              <FilePlus2 className="w-3.5 h-3.5" /> Add files
+            </button>
+            <select
+              value={targetFormat}
+              onChange={(event) => onTargetFormatChange(event.target.value as DataFormat)}
+              className="px-2.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs"
+            >
+              {formats.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}
+            </select>
+            <button
+              type="button"
+              onClick={onStartAll}
+              disabled={isRunning || !tasks.some((task) => task.status === 'waiting' || task.status === 'failed')}
+              className="px-3 py-2 rounded-lg bg-gradient-to-r from-[#ff6be4] to-rose-500 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40"
+            >
+              <Play className="w-3.5 h-3.5" /> {isRunning ? 'Processing…' : 'Start all'}
+            </button>
+            <button
+              type="button"
+              onClick={onClearCompleted}
+              disabled={completedCount === 0}
+              className="px-2.5 py-2 rounded-lg text-xs text-slate-500 hover:bg-white dark:hover:bg-slate-800 disabled:opacity-40"
+            >
+              Clear completed
+            </button>
+          </div>
+
+          <div
+            onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }}
+            onDrop={(event) => { event.preventDefault(); onAddFiles(event.dataTransfer.files); }}
+            onClick={() => fileRef.current?.click()}
+            className="border border-dashed border-slate-300 dark:border-slate-700 rounded-xl p-3 text-center text-xs text-slate-500 cursor-pointer hover:border-[#ff6be4]"
+          >
+            <Upload className="w-4 h-4 mx-auto mb-1 text-[#ff6be4]" />
+            Drop files here or browse
+          </div>
+
+          <div className="grid grid-cols-[minmax(0,1fr)_75px_65px] gap-2 px-2 text-[10px] uppercase tracking-wide text-slate-400 font-semibold">
+            <span>Data</span><span>Size</span><span>Records</span>
+          </div>
+
+          <div className="max-h-44 overflow-y-auto space-y-1">
+            {tasks.length === 0 ? (
+              <p className="text-xs text-slate-400 text-center py-3">No batch files added.</p>
+            ) : tasks.map((task) => (
+              <div
+                key={task.id}
+                className={`grid grid-cols-[minmax(0,1fr)_75px_65px] gap-2 items-center rounded-lg px-2 py-2 text-xs ${
+                  activeTaskId === task.id
+                    ? 'bg-pink-50 dark:bg-pink-950/30 border border-pink-200 dark:border-pink-900'
+                    : 'hover:bg-white dark:hover:bg-slate-800 border border-transparent'
+                }`}
+              >
+                <button type="button" onClick={() => onSelect(task.id)} className="min-w-0 flex items-center gap-2 text-left">
+                  <Status task={task} />
+                  <span className="truncate text-slate-700 dark:text-slate-200">{task.name}</span>
+                </button>
+                <span className="text-slate-400">{sizeLabel(task.size)}</span>
+                <span className="flex items-center justify-between gap-1 text-slate-500">
+                  {task.recordCount || '—'}
+                  <button type="button" onClick={() => onRemove(task.id)} title="Remove file" className="text-slate-400 hover:text-rose-500">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface OutputProps extends SharedProps {
+  open: boolean;
+  onToggle: () => void;
+}
+
+export function BatchOutputPanel(props: OutputProps) {
+  const { open, onToggle, tasks, activeTaskId, onSelect, onDownload } = props;
+
+  return (
+    <div className="border-b border-slate-200 dark:border-slate-800">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full px-4 py-2.5 flex items-center justify-between text-xs hover:bg-slate-50 dark:hover:bg-slate-800/50"
+      >
+        <span className="flex items-center gap-2 font-semibold text-slate-600 dark:text-slate-300">
+          <Layers className="w-3.5 h-3.5 text-[#ff6be4]" />
+          Batch output
+          <span className="text-slate-400 font-normal">
+            {tasks.filter((task) => task.status === 'completed').length}/{tasks.length} completed
+          </span>
+        </span>
+        <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3 max-h-48 overflow-y-auto space-y-1 bg-slate-50/70 dark:bg-slate-950/30">
+          {tasks.length === 0 ? (
+            <p className="text-xs text-slate-400 text-center py-3">Batch output status will appear here.</p>
+          ) : tasks.map((task) => (
+            <div key={task.id} className="flex items-center justify-between gap-2 px-2 py-2 rounded-lg hover:bg-white dark:hover:bg-slate-800">
+              <button type="button" onClick={() => onSelect(task.id)} className="min-w-0 flex items-center gap-2 text-left">
+                <Status task={task} />
+                <span className="truncate text-xs text-slate-700 dark:text-slate-200">{task.name}</span>
+                <span className="text-[10px] text-slate-400 shrink-0">
+                  {task.status === 'completed' ? `→ ${task.outputFormat?.toUpperCase()}` : task.status}
+                </span>
+              </button>
+              {task.status === 'completed' && (
+                <button type="button" onClick={() => onDownload(task)} className="shrink-0 px-2 py-1.5 rounded-md text-xs text-[#e34ac8] hover:bg-pink-50 dark:hover:bg-pink-950/40 flex items-center gap-1">
+                  <Download className="w-3.5 h-3.5" /> Download
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
