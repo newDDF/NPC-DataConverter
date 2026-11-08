@@ -1232,7 +1232,7 @@ export default function App() {
   });
 
   return (
-    <div className="min-h-screen lg:h-dvh lg:min-h-0 lg:overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans selection:bg-[#ff6be4] selection:text-white">
+    <div className="min-h-screen lg:h-dvh lg:min-h-0 lg:overflow-hidden bg-[#9CA3AF] dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans selection:bg-[#ff6be4] selection:text-white">
       
       {/* Custom Scrollbar Styles */}
       <style jsx global>{`
@@ -1309,7 +1309,7 @@ export default function App() {
 
       {true ? (
       /* Main Layout 3:9 ratio */
-      <main className="flex-1 max-w-[1700px] w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch lg:min-h-0 lg:overflow-hidden">
+      <main className="flex-1 max-w-[1700px] w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch lg:min-h-0 lg:overflow-hidden bg-[#9CA3AF] dark:bg-transparent">
         
         {/* Left Sidebar (3 Cols) */}
         <aside className="lg:col-span-3 grid grid-rows-[auto_minmax(0,1fr)] gap-5 self-stretch min-h-0">
