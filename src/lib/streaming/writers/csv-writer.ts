@@ -4,7 +4,6 @@ import type {
   StreamingRecord,
   StreamingWriter,
   StreamingWriterSession,
-  WriterOptions,
 } from '../core/contracts';
 
 export class CsvWriter implements StreamingWriter {
@@ -12,7 +11,6 @@ export class CsvWriter implements StreamingWriter {
 
   async create(
     sink: StreamingOutputSink,
-    _options: WriterOptions = {},
   ): Promise<StreamingWriterSession> {
     let columns: string[] | null = null;
     let firstBatch = true;

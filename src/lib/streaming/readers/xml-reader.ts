@@ -111,8 +111,7 @@ export class XmlReader implements StreamingReader {
     const pendingRows: StreamingRecord[] = [];
 
     let parserError: Error | null = null;
-    let processedBytes = 0;
-    let pendingBytes = 0;
+        let pendingBytes = 0;
     let streamFinished = false;
 
     parser.on('error', (error) => {
@@ -221,8 +220,7 @@ export class XmlReader implements StreamingReader {
           break;
         }
 
-        processedBytes += result.value.byteLength;
-        pendingBytes += result.value.byteLength;
+                pendingBytes += result.value.byteLength;
 
         const text = decoder.decode(result.value, { stream: true });
 

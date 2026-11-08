@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useRef, useState } from 'react';
-import type { DataFormat } from '@/types/converter';
+import type { DataFormat, SQLMode } from '@/types/converter';
 import type { BatchTask } from '@/types/batch';
 import {
   convertBatchRows,
@@ -9,8 +9,7 @@ import {
   getBatchSourceFormat,
   readBatchSource,
 } from '@/lib/batch/convert';
-import { parseExcelBuffer } from '@/utils/parsers';
-import { serializeSQLFormatted } from '@/utils/sql';
+import { serializeSQLCreate, serializeSQLCreateTable, serializeSQLUpdate } from '@/utils/sql';
 
 const createTaskId = () =>
   `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -43,9 +42,7 @@ export function useBatchTasks() {
 
     try {
       const source = await readBatchSource(task.file, task.sourceFormat);
-      const sourceData = task.sourceFormat === 'excel'
-        ? JSON.stringify(source.rows, null, 2)
-        : await task.file.text();
+      const sourceData = source.preview;
 
       updateTask(task.id, {
         sourceData,
@@ -129,7 +126,9 @@ export function useBatchTasks() {
     task: BatchTask,
     format: DataFormat,
     columns?: string[],
-    tableName = 'data'
+    tableName = 'data',
+    sqlMode: SQLMode = 'insert',
+    keyColumns: string[] = []
   ) => {
     if (!task.sourceFormat || task.status === 'processing' || task.status === 'completed') {
       return;
@@ -145,18 +144,51 @@ export function useBatchTasks() {
 
     try {
       const source = await readBatchSource(task.file, task.sourceFormat);
-      const result = convertBatchRows(source.rows, format, columns, tableName);
-      const sourceData = task.sourceFormat === 'excel'
-        ? JSON.stringify(source.rows, null, 2)
-        : task.sourceData ?? await task.file.text();
+      let outputText: string;
+      let outputBlob: Blob | null = null;
+
+      if (format === 'sql') {
+        const availableColumns = Array.from(
+          new Set(source.rows.flatMap((row) => Object.keys(row)))
+        );
+        const sqlColumns = columns?.length
+          ? columns.filter((column) => availableColumns.includes(column))
+          : availableColumns;
+
+        if (sqlColumns.length === 0) {
+          throw new Error('No valid fields are selected for SQL output.');
+        }
+
+        const inputColumns = sqlMode === 'update' || sqlMode === 'create'
+          ? Array.from(new Set([...sqlColumns, ...keyColumns]))
+          : sqlColumns;
+
+        const orderedRows = source.rows.map((row) =>
+          Object.fromEntries(
+            inputColumns
+              .filter((column) => Object.prototype.hasOwnProperty.call(row, column))
+              .map((column) => [column, row[column]])
+          )
+        );
+
+        outputText = sqlMode === 'update'
+          ? serializeSQLUpdate(orderedRows, inputColumns, keyColumns, tableName)
+          : sqlMode === 'create'
+            ? serializeSQLCreateTable(orderedRows, inputColumns, tableName, keyColumns)
+            : serializeSQLCreate(orderedRows, sqlColumns, tableName);
+      } else {
+        const result = convertBatchRows(source.rows, format, columns, tableName);
+        outputText = result.text;
+        outputBlob = result.blob;
+      }
 
       updateTask(task.id, {
         status: 'completed',
         outputFormat: format,
         sourcePreview: source.preview,
-        sourceData,
-        outputText: result.text,
-        outputBlob: result.blob,
+        sourceData: source.preview,
+        outputText,
+        outputBlob,
         recordCount: source.rows.length,
         error: '',
       });
@@ -171,7 +203,9 @@ export function useBatchTasks() {
   const startAll = useCallback(async (
     format: DataFormat = targetFormat,
     columns?: string[],
-    tableName = 'data'
+    tableName = 'data',
+    sqlMode: SQLMode = 'insert',
+    keyColumns: string[] = []
   ) => {
     if (isRunningRef.current) return;
 
@@ -188,7 +222,7 @@ export function useBatchTasks() {
 
     try {
       for (const task of pending) {
-        await processTask(task, format, columns, tableName);
+        await processTask(task, format, columns, tableName, sqlMode, keyColumns);
       }
     } finally {
       isRunningRef.current = false;
@@ -199,7 +233,9 @@ export function useBatchTasks() {
   const formatSQLTask = useCallback(async (
     id: string,
     columns: string[],
-    tableName = 'data'
+    tableName = 'data',
+    sqlMode: SQLMode = 'insert',
+    keyColumns: string[] = []
   ) => {
     const task = tasks.find((item) => item.id === id);
     if (!task || task.status !== 'completed' || !task.sourceFormat) return;
@@ -217,15 +253,23 @@ export function useBatchTasks() {
         throw new Error('No valid fields are selected for SQL output.');
       }
 
+      const inputColumns = sqlMode === 'update' || sqlMode === 'create'
+        ? Array.from(new Set([...sqlColumns, ...keyColumns]))
+        : sqlColumns;
+
       const orderedRows = source.rows.map((row) =>
         Object.fromEntries(
-          sqlColumns
+          inputColumns
             .filter((column) => Object.prototype.hasOwnProperty.call(row, column))
             .map((column) => [column, row[column]])
         )
       );
 
-      const outputText = serializeSQLFormatted(orderedRows, sqlColumns, tableName);
+      const outputText = sqlMode === 'update'
+        ? serializeSQLUpdate(orderedRows, inputColumns, keyColumns, tableName)
+        : sqlMode === 'create'
+          ? serializeSQLCreateTable(orderedRows, inputColumns, tableName, keyColumns)
+          : serializeSQLCreate(orderedRows, sqlColumns, tableName);
 
       updateTask(id, {
         outputFormat: 'sql',

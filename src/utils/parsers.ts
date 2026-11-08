@@ -484,7 +484,8 @@ export const parseExcelBuffer = (buffer: ArrayBuffer): DataRow[] => {
 export const serializeRows = (
   rows: DataRow[],
   format: DataFormat,
-  columns?: string[]
+  columns?: string[],
+  jsonIndent = 2
 ): string => {
   const keys = columns?.length
     ? columns
@@ -503,7 +504,7 @@ export const serializeRows = (
       return serializeSQL(rows, keys);
 
     case 'json':
-      return JSON.stringify(rows, null, 2);
+      return JSON.stringify(rows, null, jsonIndent);
 
     case 'csv': {
       const csvRows: Record<string, string>[] = [];

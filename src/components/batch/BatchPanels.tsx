@@ -109,7 +109,7 @@ interface OutputProps extends SharedProps {
 }
 
 export function BatchOutputPanel({
-  open, onToggle, tasks, activeTaskId, onSelect, onDownload,
+  open, onToggle, tasks, onSelect, onDownload,
 }: OutputProps) {
   const completed = tasks.filter((task) => task.status === 'completed').length;
 

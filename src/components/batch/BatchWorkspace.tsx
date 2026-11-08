@@ -62,12 +62,12 @@ export default function BatchWorkspace({ isOpen, onClose }: BatchWorkspaceProps)
 
   const activeTask = tasks.find((task) => task.id === activeTaskId) ?? null;
 
-  if (!isOpen) return null;
-
   const completedCount = useMemo(
     () => tasks.filter((task) => task.status === 'completed').length,
     [tasks]
   );
+
+  if (!isOpen) return null;
 
   const addFiles = (files: FileList | File[]) => {
     const incoming = Array.from(files);

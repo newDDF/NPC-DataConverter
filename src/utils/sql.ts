@@ -164,12 +164,12 @@ class SQLReader {
       this.expect('INSERT');
       this.expect('INTO');
 
-      let tableName = this.readIdentifier();
+      this.readIdentifier();
       while (true) {
         this.skipWhitespace();
         if (this.source[this.index] !== '.') break;
         this.index++;
-        tableName += `.${this.readIdentifier()}`;
+        this.readIdentifier();
       }
 
       let columns: string[] | null = null;
@@ -259,37 +259,71 @@ export const parseSQL = (source: string): DataRow[] => {
 };
 
 const quoteIdentifier = (identifier: string): string => {
-  if (!identifier.trim()) throw new Error('SQL table and column names cannot be empty.');
-  return `"${identifier.replace(/"/g, '""')}"`;
+  const value = identifier.trim();
+
+  if (!value) {
+    throw new Error('SQL table and column names cannot be empty.');
+  }
+
+  return `\`${value.replace(/`/g, '``')}\``;
+};
+
+const quoteTableName = (tableName: string): string => {
+  const parts = tableName.split('.').map((part) => part.trim());
+
+  if (parts.length === 0 || parts.some((part) => !part)) {
+    throw new Error('SQL table name contains an empty identifier.');
+  }
+
+  return parts.map(quoteIdentifier).join('.');
 };
 
 const quoteValue = (value: unknown): string => {
   if (value === null || value === undefined) return 'NULL';
-  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+
+  if (typeof value === 'boolean') {
+    return value ? '1' : '0';
+  }
+
   if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new Error('Cannot serialize a non-finite number to SQL.');
+    if (!Number.isFinite(value)) {
+      throw new Error('Cannot serialize a non-finite number to SQL.');
+    }
+
     return String(value);
   }
+
   if (typeof value === 'string') {
-    return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\0/g, '\\0').replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
+    const escaped = value.replace(/[\\'\0\n\r\t\u001a]/g, (char) => {
+      const escapes: Record<string, string> = {
+        '\\': '\\\\',
+        "'": "''",
+        '\0': '\\0',
+        '\n': '\\n',
+        '\r': '\\r',
+        '\t': '\\t',
+        '\u001a': '\\Z',
+      };
+
+      return escapes[char];
+    });
+
+    return `'${escaped}'`;
   }
 
   throw new Error('Nested objects and arrays must be flattened before SQL export.');
 };
+
+const DEFAULT_SQL_BATCH_SIZE = 500;
 
 const buildSQLHeader = (columns: string[], tableName: string): string => {
   if (columns.length === 0) {
     throw new Error('There are no columns to export to SQL.');
   }
 
-  const table = tableName
-    .split('.')
-    .map((part) => quoteIdentifier(part.trim()))
-    .join('.');
+  const columnList = columns.map(quoteIdentifier).join(', ');
 
-  const columnList = columns.map((column) => quoteIdentifier(column)).join(', ');
-
-  return `INSERT INTO ${table} (${columnList}) VALUES`;
+  return `INSERT INTO ${quoteTableName(tableName)} (${columnList})`;
 };
 
 export const serializeSQL = (
@@ -305,33 +339,229 @@ export const serializeSQL = (
 
   return rows.map((row) => {
     const values = columns.map((column) => quoteValue(row[column])).join(', ');
-    return `${header} (${values});`;
+    return `${header} VALUES (${values});`;
   }).join('\n');
 };
 
-export const serializeSQLFormatted = (
+export const serializeSQLCreate = (
   rows: DataRow[],
   columns: string[],
+  tableName = 'data',
+  batchSize = DEFAULT_SQL_BATCH_SIZE
+): string => {
+  if (rows.length === 0) {
+    throw new Error('There are no records to export to SQL.');
+  }
+
+  if (!Number.isInteger(batchSize) || batchSize < 1) {
+    throw new Error('SQL batch size must be a positive integer.');
+  }
+
+  const header = buildSQLHeader(columns, tableName);
+
+  const statements: string[] = [];
+
+  for (let offset = 0; offset < rows.length; offset += batchSize) {
+    const chunk = rows.slice(offset, offset + batchSize);
+
+    const valuesList = chunk.map((row) => {
+      const values = columns.map((column) => quoteValue(row[column])).join(', ');
+      return `  (${values})`;
+    }).join(',\n');
+
+    statements.push(`${header}\nVALUES\n${valuesList};`);
+  }
+
+  return statements.join('\n\n');
+};
+
+export const serializeSQLUpdate = (
+  rows: DataRow[],
+  columns: string[],
+  keyColumns: string[],
   tableName = 'data'
 ): string => {
   if (rows.length === 0) {
     throw new Error('There are no records to export to SQL.');
   }
 
-  const header = buildSQLHeader(columns, tableName);
-  const table = tableName
-    .split('.')
-    .map((part) => quoteIdentifier(part.trim()))
-    .join('.');
+  if (columns.length === 0) {
+    throw new Error('There are no columns to export to SQL.');
+  }
 
-  const columnList = columns
-    .map((column) => `  ${quoteIdentifier(column)}`)
-    .join(',\n');
+  const keys = Array.from(new Set(keyColumns));
 
-  const valuesList = rows.map((row) => {
-    const values = columns.map((column) => quoteValue(row[column])).join(', ');
-    return `  (${values})`;
-  }).join(',\n');
+  if (keys.length === 0) {
+    throw new Error('Select at least one primary key field for UPDATE.');
+  }
 
-  return `INSERT INTO ${table} (\n${columnList}\n)\nVALUES\n${valuesList};`;
+  const missingKeys = keys.filter((key) => !columns.includes(key));
+  if (missingKeys.length > 0) {
+    throw new Error(`Primary key field(s) are unavailable: ${missingKeys.join(', ')}.`);
+  }
+
+  const updateColumns = columns.filter((column) => !keys.includes(column));
+  if (updateColumns.length === 0) {
+    throw new Error('No fields are available to update after excluding primary keys.');
+  }
+
+  return rows.map((row, index) => {
+    const where = keys.map((key) => {
+      const value = row[key];
+
+      if (
+        !Object.prototype.hasOwnProperty.call(row, key) ||
+        value === null ||
+        value === undefined ||
+        (typeof value === 'string' && value.trim() === '')
+      ) {
+        throw new Error(
+          `Missing or empty primary key "${key}" in record ${index + 1}.`
+        );
+      }
+
+      return `${quoteIdentifier(key)} = ${quoteValue(value)}`;
+    }).join(' AND ');
+
+    const set = updateColumns
+      .map((column) => `${quoteIdentifier(column)} = ${quoteValue(row[column])}`)
+      .join(',\n  ');
+
+    return `UPDATE ${quoteTableName(tableName)}\nSET\n  ${set}\nWHERE ${where};`;
+  }).join('\n\n');
 };
+
+
+const inferSQLColumnType = (values: unknown[]): string => {
+  const present = values.filter((value) => value !== null && value !== undefined);
+
+  if (present.length === 0) return 'TEXT';
+
+  if (present.some((value) =>
+    typeof value === 'object' || typeof value === 'function'
+  )) {
+    throw new Error('Nested objects and arrays must be flattened before SQL export.');
+  }
+
+  if (present.every((value) => typeof value === 'boolean')) {
+    return 'TINYINT(1)';
+  }
+
+  const numericValues = present.filter(
+    (value) => typeof value === 'number' || typeof value === 'boolean'
+  );
+
+  if (numericValues.length === present.length) {
+    const numbers = numericValues.map((value) =>
+      typeof value === 'boolean' ? Number(value) : value as number
+    );
+
+    if (!numbers.every(Number.isFinite)) {
+      throw new Error('Cannot infer a SQL type from non-finite numbers.');
+    }
+
+    if (numbers.every(Number.isInteger)) {
+      return numbers.every(Number.isSafeInteger) ? 'BIGINT' : 'DECIMAL(20,0)';
+    }
+
+    const decimalParts = numbers.map((value) => {
+      const text = String(value);
+      if (/[eE]/.test(text)) return null;
+      const parts = text.replace(/^-/, '').split('.');
+      return {
+        precision: parts[0].replace(/^0+/, '').length + (parts[1]?.length ?? 0),
+        scale: parts[1]?.length ?? 0,
+      };
+    });
+
+    if (decimalParts.some((part) => part === null)) return 'DOUBLE';
+
+    const scale = Math.min(
+      30,
+      Math.max(...decimalParts.map((part) => part!.scale))
+    );
+    const integerDigits = Math.max(
+      1,
+      ...decimalParts.map((part) => part!.precision - part!.scale)
+    );
+    const precision = Math.min(65, integerDigits + scale);
+
+    return `DECIMAL(${Math.max(precision, scale + 1)},${scale})`;
+  }
+
+  if (present.every((value) => typeof value === 'string')) {
+    const strings = present as string[];
+
+    if (strings.every((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))) {
+      return 'DATE';
+    }
+
+    if (strings.every((value) =>
+      /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
+    )) {
+      return 'DATETIME(3)';
+    }
+
+    const maxLength = Math.max(1, ...strings.map((value) => value.length));
+
+    if (maxLength <= 255) return `VARCHAR(${maxLength})`;
+    if (maxLength <= 65535) return 'TEXT';
+    if (maxLength <= 16777215) return 'MEDIUMTEXT';
+    return 'LONGTEXT';
+  }
+
+  const maxLength = Math.max(
+    1,
+    ...present.map((value) => String(value).length)
+  );
+
+  if (maxLength <= 255) return `VARCHAR(${maxLength})`;
+  if (maxLength <= 65535) return 'TEXT';
+  if (maxLength <= 16777215) return 'MEDIUMTEXT';
+  return 'LONGTEXT';
+};
+
+export const serializeSQLCreateTable = (
+  rows: DataRow[],
+  columns: string[],
+  tableName = 'data',
+  primaryKeyColumns: string[] = []
+): string => {
+  if (rows.length === 0) {
+    throw new Error('There are no records to export to SQL.');
+  }
+
+  if (columns.length === 0) {
+    throw new Error('There are no columns to export to SQL.');
+  }
+
+  if (new Set(columns).size !== columns.length) {
+    throw new Error('Duplicate column names are not supported.');
+  }
+
+  const primaryKeys = Array.from(new Set(primaryKeyColumns));
+  const missingKeys = primaryKeys.filter((key) => !columns.includes(key));
+
+  if (missingKeys.length > 0) {
+    throw new Error(`Primary key field(s) are unavailable: ${missingKeys.join(', ')}.`);
+  }
+
+  const definitions = columns.map((column) => {
+    const type = inferSQLColumnType(rows.map((row) => row[column]));
+    return `  ${quoteIdentifier(column)} ${type}`;
+  });
+
+  if (primaryKeys.length > 0) {
+    definitions.push(
+      `  PRIMARY KEY (${primaryKeys.map(quoteIdentifier).join(', ')})`
+    );
+  }
+
+  return `CREATE TABLE ${quoteTableName(tableName)} (\n${definitions.join(',\n')}\n);`;
+};
+
+export const serializeSQLFormatted = (
+  rows: DataRow[],
+  columns: string[],
+  tableName = 'data'
+): string => serializeSQLCreate(rows, columns, tableName);

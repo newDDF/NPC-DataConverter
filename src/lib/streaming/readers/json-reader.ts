@@ -25,9 +25,8 @@ export class JsonReader implements StreamingReader {
 
     let parser: JSONParser | null = null;
     let parserError: Error | null = null;
-    let pendingRows: Record<string, unknown>[] = [];
-    let processedBytes = 0;
-    let pendingBytes = 0;
+    const pendingRows: Record<string, unknown>[] = [];
+        let pendingBytes = 0;
     let initialized = false;
     let streamCompleted = false;
 
@@ -138,8 +137,7 @@ export class JsonReader implements StreamingReader {
           break;
         }
 
-        processedBytes += value.byteLength;
-        pendingBytes += value.byteLength;
+                pendingBytes += value.byteLength;
 
         yield* processText(
           decoder.decode(value, { stream: true }),

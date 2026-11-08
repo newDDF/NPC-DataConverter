@@ -1,4 +1,4 @@
-export type StreamingFormat = 'csv' | 'json' | 'excel' | 'xml';
+export type StreamingFormat = 'csv' | 'json' | 'excel' | 'xml' | 'sql';
 
 export type StreamingTaskState =
   | 'queued'
@@ -18,6 +18,10 @@ export type StreamingWorkerRequest =
         inputFormat: StreamingFormat;
         outputFormat: StreamingFormat;
         fileName: string;
+        sqlMode?: 'insert' | 'update' | 'create';
+        tableName?: string;
+        keyColumns?: string[];
+
       };
     }
   | {
@@ -63,6 +67,10 @@ export type StreamingConversionConfig = {
   outputFormat: StreamingFormat;
   file: File;
   outputFileName: string;
+  sqlMode?: 'insert' | 'update' | 'create';
+  tableName?: string;
+  keyColumns?: string[];
+
 };
 
 export type StreamingProgress = {

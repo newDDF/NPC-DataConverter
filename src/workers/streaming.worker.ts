@@ -1,4 +1,7 @@
-import { convertStreamingFile } from '../lib/streaming/core/pipeline';
+import {
+  convertStreamingFile,
+  inspectStreamingFile,
+} from '../lib/streaming/core/pipeline';
 import type { StreamingOutputSink } from '../lib/streaming/core/contracts';
 import type { StreamingFormat } from '../lib/streaming/types';
 
@@ -16,6 +19,12 @@ type ConversionTask = {
   fileName: string;
   inputFormat: StreamingFormat;
   outputFormat: StreamingFormat;
+  selectedFields?: string[];
+  fieldRenames?: Record<string, string>;
+  jsonIndent?: number;
+  sqlMode?: 'insert' | 'update' | 'create';
+  tableName?: string;
+  keyColumns?: string[];
   state: TaskState;
   controller: AbortController;
   writable: FileSystemWritableFileStream | null;
@@ -43,6 +52,28 @@ self.onmessage = (event: MessageEvent) => {
     return;
   }
 
+  if (type === 'INSPECT_FILE') {
+    void inspectStreamingFile(
+      payload.file,
+      payload.inputFormat,
+      payload.options,
+    )
+      .then((result) => {
+        self.postMessage({
+          status: 'inspected',
+          ...result,
+        });
+      })
+      .catch((error) => {
+        self.postMessage({
+          status: 'error',
+          message: getErrorMessage(error),
+        });
+      });
+
+    return;
+  }
+
   if (type === 'START_CONVERT') {
     startQueue = startQueue
       .then(() => startConversion(
@@ -50,6 +81,12 @@ self.onmessage = (event: MessageEvent) => {
         payload.fileName,
         payload.inputFormat,
         payload.outputFormat,
+        payload.selectedFields,
+        payload.fieldRenames,
+        payload.jsonIndent,
+        payload.sqlMode,
+        payload.tableName,
+        payload.keyColumns,
       ))
       .catch((error) => {
         self.postMessage({
@@ -65,6 +102,12 @@ function createTask(
   fileName: string,
   inputFormat: StreamingFormat,
   outputFormat: StreamingFormat,
+  selectedFields?: string[],
+  fieldRenames?: Record<string, string>,
+  jsonIndent?: number,
+  sqlMode?: 'insert' | 'update' | 'create',
+  tableName?: string,
+  keyColumns?: string[],
 ): ConversionTask {
   let resolveDone!: () => void;
 
@@ -77,6 +120,12 @@ function createTask(
     fileName,
     inputFormat,
     outputFormat,
+    selectedFields,
+    fieldRenames,
+    jsonIndent,
+    sqlMode,
+    tableName,
+    keyColumns,
     state: 'active',
     controller: new AbortController(),
     writable: null,
@@ -141,6 +190,12 @@ async function startConversion(
   fileName: string,
   inputFormat: StreamingFormat,
   outputFormat: StreamingFormat,
+  selectedFields?: string[],
+  fieldRenames?: Record<string, string>,
+  jsonIndent?: number,
+  sqlMode?: 'insert' | 'update' | 'create',
+  tableName?: string,
+  keyColumns?: string[],
 ) {
   const previousTask = currentTask;
 
@@ -154,7 +209,18 @@ async function startConversion(
 
   const targetFileName = fileName || `converted_${Date.now()}.${outputFormat}`;
 
-  const task = createTask(file, targetFileName, inputFormat, outputFormat);
+  const task = createTask(
+    file,
+    targetFileName,
+    inputFormat,
+    outputFormat,
+    selectedFields,
+    fieldRenames,
+    jsonIndent,
+    sqlMode,
+    tableName,
+    keyColumns,
+  );
   currentTask = task;
 
   task.setupPromise = (async () => {
@@ -185,6 +251,12 @@ async function startConversion(
     file: task.file,
     inputFormat: task.inputFormat,
     outputFormat: task.outputFormat,
+    selectedFields: task.selectedFields,
+    fieldRenames: task.fieldRenames,
+    jsonIndent: task.jsonIndent,
+    sqlMode: task.sqlMode,
+    tableName: task.tableName,
+    keyColumns: task.keyColumns,
     sink: createOutputSink(task),
     signal: task.controller.signal,
     onProgress(progress) {

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import CodePreview from '@/components/CodePreview';
 import { useBatchTasks } from '@/hooks/useBatchTasks';
 import { readBatchSource, convertBatchRows, getBatchOutputExtension } from '@/lib/batch/convert';
@@ -15,7 +15,7 @@ import {
 } from '@/lib/json-fields';
 import { BatchInputPanel, BatchOutputPanel } from '@/components/batch/BatchPanels';
 import { detectFormat, parseTextData, parseExcelBuffer, serializeRows, createExcelBlob } from '@/utils/parsers';
-import { serializeSQL, serializeSQLFormatted } from '@/utils/sql';
+import { serializeSQL, serializeSQLCreateTable, serializeSQLFormatted, serializeSQLUpdate } from '@/utils/sql';
 import { 
   ArrowRightLeft, 
   Copy, 
@@ -27,8 +27,7 @@ import {
   Moon, 
   ShieldCheck, 
   ListFilter, 
-  CheckSquare, 
-  Square, 
+
   Search, 
   X, 
   Lock,
@@ -37,11 +36,23 @@ import {
   Table,
   Code2,
   Layers,
-  FileSpreadsheet,
-  Pencil
+
+  Pencil,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 
-import type { DataFormat, InputFormatOption } from '@/types/converter';
+import type { DataFormat, InputFormatOption, SQLMode } from '@/types/converter';
+import type { StreamingFormat } from '@/lib/streaming/types';
+import type {
+  StreamingClient,
+  StreamingInspection,
+  StreamingClientProgress,
+} from '@/lib/streaming/client/types';
+import {
+  createStreamingClient,
+  inspectStreamingFile,
+} from '@/lib/streaming/client/create-client';
 
 const SAMPLES: Record<string, { name: string; format: DataFormat; data: string }> = {
   users: {
@@ -126,7 +137,7 @@ ORD-9014,Robert Chen,USB-C Hub,3,25.50,76.50,Delivered,2026-10-22`
 };
 
 const renderDataTable = (
-  rows: Record<string, any>[],
+  rows: Record<string, unknown>[],
   emptyMessage: string
 ) => {
   if (rows.length === 0) {
@@ -234,15 +245,32 @@ export default function App() {
   const [inputBatchOpen, setInputBatchOpen] = useState(false);
   const [previewMode, setPreviewMode] = useState<'single' | 'batch'>('single');
   const [outputBatchOpen, setOutputBatchOpen] = useState(false);
+  const [expandedPreview, setExpandedPreview] = useState<'input' | 'output' | null>(null);
   const [inputFormat, setInputFormat] = useState<InputFormatOption>('auto');
-  const [detectedFormat, setDetectedFormat] = useState<DataFormat>('json');
   const [outputFormat, setOutputFormat] = useState<DataFormat>('json');
+  const [jsonIndent, setJsonIndent] = useState(2);
   const [inputData, setInputData] = useState(SAMPLES.users.data);
+
+  const [streamingSourceFile, setStreamingSourceFile] = useState<File | null>(null);
+  const [streamingSourceFormat, setStreamingSourceFormat] = useState<StreamingFormat | null>(null);
+  const [streamingInspection, setStreamingInspection] = useState<StreamingInspection | null>(null);
+  const [streamingPreviewTruncated, setStreamingPreviewTruncated] = useState(false);
+  const [streamingReady, setStreamingReady] = useState(false);
+  const [streamingProgress, setStreamingProgress] = useState<StreamingClientProgress>({
+    chunks: 0,
+    rows: 0,
+    parseErrors: 0,
+  });
+
+  const streamingClientRef = useRef<StreamingClient | null>(null);
+  const inspectionRequestRef = useRef(0);
   const [outputData, setOutputData] = useState('');
   const [sqlTableName, setSqlTableName] = useState('data');
+  const [sqlMode, setSqlMode] = useState<SQLMode>('insert');
+  const [sqlKeyFields, setSqlKeyFields] = useState<string[]>([]);
   const [outputBlob, setOutputBlob] = useState<Blob | null>(null);
   const [recordCount, setRecordCount] = useState(0);
-  const [convertedRows, setConvertedRows] = useState<Record<string, any>[]>([]);
+  const [convertedRows, setConvertedRows] = useState<Record<string, unknown>[]>([]);
   const [isCopied, setIsCopied] = useState(false);
 
   const [availableFields, setAvailableFields] = useState<string[]>([]);
@@ -273,50 +301,118 @@ export default function App() {
   }, [theme]);
 
 
-  const activeInputFormat = inputFormat === 'auto' ? detectedFormat : inputFormat;
+  const activeInputFormat = inputFormat === 'auto' ? detectFormat(inputData) : inputFormat;
+  const activeTask = batch.activeTask;
 
   const [batchPreview, setBatchPreview] = useState('');
   const [batchSqlTableName, setBatchSqlTableName] = useState('data');
+  const [batchSqlMode, setBatchSqlMode] = useState<SQLMode>('insert');
+  const [batchSqlKeyFields, setBatchSqlKeyFields] = useState<string[]>([]);
+  const batchRowsCacheRef = useRef<{
+    taskId: string;
+    rowsPromise: Promise<Record<string, unknown>[]>;
+  } | null>(null);
 
   useEffect(() => {
     if (previewMode !== 'batch') return;
 
-    const task = batch.activeTask;
+    const task = activeTask;
 
     if (!task) {
+      batchRowsCacheRef.current = null;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear stale preview when no batch task is selected.
       setBatchPreview('');
+      setConvertedRows([]);
       return;
     }
 
     if (task.status === 'processing') {
       setBatchPreview('Conversion in progress...');
-      return;
-    }
-
-    if (task.status === 'completed' && task.outputText) {
-      setBatchPreview(task.outputText);
+      setConvertedRows([]);
       return;
     }
 
     if (!task.sourceFormat) {
       setBatchPreview('Preview unavailable: unsupported source format.');
+      setConvertedRows([]);
       return;
     }
 
     let cancelled = false;
+
+    const getTaskRows = async () => {
+      let cached = batchRowsCacheRef.current;
+
+      if (!cached || cached.taskId !== task.id) {
+        const rowsPromise = readBatchSource(
+          task.file,
+          task.sourceFormat!
+        ).then((source) => source.rows);
+
+        cached = {
+          taskId: task.id,
+          rowsPromise,
+        };
+
+        batchRowsCacheRef.current = cached;
+      }
+
+      return cached.rowsPromise;
+    };
+
+    const orderedSelectedFields = availableFields.filter((field) =>
+      selectedFields.includes(field)
+    );
+
+    const createPreviewRows = (rows: Record<string, unknown>[]) =>
+      rows.slice(0, 200).map((row) =>
+        Object.fromEntries(
+          orderedSelectedFields
+            .filter((field) => Object.prototype.hasOwnProperty.call(row, field))
+            .map((field) => [
+              fieldRenames[field] ?? field,
+              row[field],
+            ])
+        )
+      );
+
     setBatchPreview('Generating conversion preview...');
 
     const generatePreview = async () => {
       try {
-        const source = await readBatchSource(task.file, task.sourceFormat!);
+        const rows = await getTaskRows();
+        const previewRows = createPreviewRows(rows);
 
-        const result = convertBatchRows(source.rows, outputFormat, selectedFields, batchSqlTableName);
+        if (cancelled) return;
+
+        setConvertedRows(previewRows);
+
+        const previewFormat =
+          task.status === 'completed' && task.outputFormat
+            ? task.outputFormat
+            : outputFormat;
+
+        const result = convertBatchRows(
+          previewRows,
+          previewFormat,
+          undefined,
+          batchSqlTableName
+        );
+        const previewText =
+          task.status === 'completed' && task.outputFormat === 'sql'
+            ? task.outputText
+            : result.text;
 
         if (!cancelled) {
-          setBatchPreview(result.text);
+          setBatchPreview(previewText.slice(0, 100 * 1024));
         }
       } catch (error) {
+        if (batchRowsCacheRef.current?.taskId === task.id) {
+          batchRowsCacheRef.current = null;
+        }
+
         if (!cancelled) {
+          setConvertedRows([]);
           setBatchPreview(
             `Preview error: ${error instanceof Error ? error.message : 'Unable to preview this file.'}`
           );
@@ -330,28 +426,26 @@ export default function App() {
       cancelled = true;
     };
   }, [
-    batch.activeTask?.id,
-    batch.activeTask?.status,
-    batch.activeTask?.outputText,
-    batch.activeTask?.sourceFormat,
+    activeTask,
     outputFormat,
     selectedFields,
     availableFields,
+    fieldRenames,
     batchSqlTableName,
     previewMode,
   ]);
 
   useEffect(() => {
     if (previewMode !== 'batch') return;
-    const task = batch.activeTask;
+    const task = activeTask;
     if (!task) return;
 
     if (task.sourceData !== undefined) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Sync the selected batch task into the shared input editor.
       setInputData(task.sourceData);
       const sourceFormat = task.sourceFormat === 'excel' ? 'json' : task.sourceFormat;
       if (sourceFormat) {
         setInputFormat(sourceFormat);
-        setDetectedFormat(sourceFormat);
       }
     }
 
@@ -360,20 +454,10 @@ export default function App() {
     setRecordCount(task.recordCount);
     if (task.outputFormat) setOutputFormat(task.outputFormat);
 
-    if (task.outputText && task.outputFormat) {
-      try {
-        setConvertedRows(parseTextData(task.outputText, task.outputFormat));
-      } catch {
-        setConvertedRows([]);
-      }
-    } else {
-      setConvertedRows([]);
-    }
+    setConvertedRows([]);
   }, [
-    batch.activeTask?.id,
-    batch.activeTask?.sourceData,
-    batch.activeTask?.outputText,
-    batch.activeTask?.outputFormat,
+    activeTask,
+    previewMode,
   ]);
 
 
@@ -389,6 +473,13 @@ export default function App() {
       sql: 'sql',
     };
 
+    const streamingFormats: Record<string, StreamingFormat> = {
+      csv: 'csv',
+      json: 'json',
+      xml: 'xml',
+      xlsx: 'excel',
+    };
+
     const supportedExtensions = [...Object.keys(formats), 'xlsx', 'xls'];
 
     if (!supportedExtensions.includes(extension)) {
@@ -396,31 +487,79 @@ export default function App() {
       return;
     }
 
+    const requestId = ++inspectionRequestRef.current;
+    const previousClient = streamingClientRef.current;
+    streamingClientRef.current = null;
+
+    if (previousClient) {
+      previousClient.cancel();
+      await previousClient.promise.catch(() => undefined);
+      await previousClient.removeOutput().catch(() => undefined);
+    }
+
+    setStreamingSourceFile(null);
+    setStreamingSourceFormat(null);
+    setStreamingInspection(null);
+    setStreamingPreviewTruncated(false);
+    setStreamingReady(false);
+    setStreamingProgress({ chunks: 0, rows: 0, parseErrors: 0 });
+    setOutputBlob(null);
+    setOutputData('');
+    setRecordCount(0);
+    setConvertedRows([]);
+
     try {
-      if (extension === 'xlsx' || extension === 'xls') {
+      const streamingFormat = streamingFormats[extension];
+
+      if (streamingFormat) {
+        setOutputData('Inspecting file...');
+        const inspection = await inspectStreamingFile(file, streamingFormat);
+
+        if (requestId !== inspectionRequestRef.current) return;
+
+        setStreamingSourceFile(file);
+        setStreamingSourceFormat(streamingFormat);
+        setStreamingInspection(inspection);
+        setInputData(JSON.stringify(inspection.previewRows, null, 2));
+        setInputFormat(streamingFormat === 'excel' ? 'excel' : streamingFormat);
+        setAvailableFields(inspection.fields);
+        setSelectedFields(inspection.fields);
+        setRecordCount(inspection.rowsInspected);
+        setOutputData('');
+        setOutputViewMode('code');
+        return;
+      }
+
+      if (extension === 'xls') {
         const buffer = await file.arrayBuffer();
         const rows = parseExcelBuffer(buffer);
+
+        if (requestId !== inspectionRequestRef.current) return;
+
         setInputData(JSON.stringify(rows, null, 2));
         setInputFormat('json');
-      } else {
-        const text = await file.text();
-        setInputData(text);
-        setInputFormat(formats[extension]);
+        return;
       }
+
+      const text = await file.text();
+
+      if (requestId !== inspectionRequestRef.current) return;
+
+      setInputData(text);
+      setInputFormat(formats[extension]);
     } catch (error) {
+      if (requestId !== inspectionRequestRef.current) return;
+
       const message = error instanceof Error ? error.message : 'Unable to read file';
       setOutputData(`File import error: ${message}`);
+      setStreamingSourceFile(null);
+      setStreamingSourceFormat(null);
+      setStreamingInspection(null);
     }
   };
 
-  useEffect(() => {
-    if (inputFormat === 'auto') {
-      setDetectedFormat(detectFormat(inputData));
-    }
-  }, [inputData, inputFormat]);
-
   const parseRawToJS = useCallback(
-    (raw: string, fmt: DataFormat): Record<string, any>[] => {
+    (raw: string, fmt: DataFormat): Record<string, unknown>[] => {
       return parseTextData(raw, fmt);
     },
     []
@@ -428,13 +567,108 @@ export default function App() {
 
   const inputPreviewRows = useMemo(() => {
     try {
-      return parseRawToJS(inputData, activeInputFormat);
+      return parseRawToJS(
+        inputData,
+        streamingSourceFile ? 'json' : activeInputFormat
+      );
     } catch {
       return [];
     }
-  }, [inputData, activeInputFormat, parseRawToJS]);
+  }, [inputData, activeInputFormat, parseRawToJS, streamingSourceFile]);
 
   useEffect(() => {
+    if (previewMode === 'batch') {
+      const task = activeTask;
+
+      if (!task || !task.sourceFormat) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear field state when the selected batch task has no readable source.
+        setAvailableFields([]);
+        setSelectedFields([]);
+        setJsonFieldTree([]);
+        setJsonFieldSelection({});
+        return;
+      }
+
+      let cancelled = false;
+      let cached = batchRowsCacheRef.current;
+
+      if (!cached || cached.taskId !== task.id) {
+        cached = {
+          taskId: task.id,
+          rowsPromise: readBatchSource(
+            task.file,
+            task.sourceFormat
+          ).then((result) => result.rows),
+        };
+        batchRowsCacheRef.current = cached;
+      }
+
+      void cached.rowsPromise.then((rows) => {
+        if (cancelled) return;
+
+        const keys = new Set<string>();
+        rows.forEach((row) => {
+          if (row && typeof row === 'object') {
+            Object.keys(row).forEach((key) => keys.add(key));
+          }
+        });
+
+        const fields = Array.from(keys);
+        setAvailableFields(fields);
+        setSelectedFields((previous) => {
+          if (
+            previous.length === 0 ||
+            !previous.every((field) => fields.includes(field))
+          ) {
+            return fields;
+          }
+          return previous;
+        });
+
+        if (task.sourceFormat === 'json') {
+          const tree = buildJsonFieldTree(rows);
+          setJsonFieldTree(tree);
+          setJsonFieldSelection((previous) => {
+            const next = createJsonFieldSelection(tree);
+            Object.keys(next).forEach((field) => {
+              if (Object.prototype.hasOwnProperty.call(previous, field)) {
+                next[field] = previous[field];
+              }
+            });
+            return next;
+          });
+        } else {
+          setJsonFieldTree([]);
+          setJsonFieldSelection({});
+        }
+      }).catch(() => {
+        if (cancelled) return;
+        setAvailableFields([]);
+        setSelectedFields([]);
+        setJsonFieldTree([]);
+        setJsonFieldSelection({});
+      });
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (streamingSourceFile && streamingInspection) {
+      const rows = streamingInspection.previewRows;
+
+      if (streamingSourceFormat === 'json') {
+        const tree = buildJsonFieldTree(rows);
+        setJsonFieldTree(tree);
+        setJsonFieldSelection(createJsonFieldSelection(tree));
+      } else {
+        setJsonFieldTree([]);
+        setJsonFieldSelection({});
+      }
+
+      return;
+    }
+
     try {
       const rows = parseRawToJS(inputData, activeInputFormat);
 
@@ -480,11 +714,162 @@ export default function App() {
       setJsonFieldTree([]);
       setJsonFieldSelection({});
     }
-  }, [inputData, activeInputFormat, parseRawToJS]);
+  }, [
+    inputData,
+    activeInputFormat,
+    parseRawToJS,
+    streamingSourceFile,
+    streamingInspection,
+    streamingSourceFormat,
+    previewMode,
+    activeTask,
+  ]);
 
-  const handleConvert = () => {
+  const handleInputDataChange = useCallback((value: string) => {
+    if (streamingSourceFile) {
+      inspectionRequestRef.current += 1;
+      const client = streamingClientRef.current;
+      streamingClientRef.current = null;
+
+      if (client) {
+        void (async () => {
+          client.cancel();
+          await client.promise.catch(() => undefined);
+          await client.removeOutput().catch(() => undefined);
+        })();
+      }
+
+      setStreamingSourceFile(null);
+      setStreamingSourceFormat(null);
+      setStreamingInspection(null);
+      setStreamingPreviewTruncated(false);
+      setStreamingReady(false);
+      setStreamingProgress({ chunks: 0, rows: 0, parseErrors: 0 });
+      setRecordCount(0);
+    }
+
+    setInputData(value);
+  }, [streamingSourceFile]);
+
+  const handleConvert = async (jsonIndentOverride = jsonIndent) => {
     if (previewMode === 'batch' && inputBatchOpen && batch.tasks.length > 0) {
-      void batch.startAll(outputFormat, selectedFields, batchSqlTableName);
+      void batch.startAll(
+        outputFormat,
+        selectedFields,
+        batchSqlTableName,
+        batchSqlMode,
+        batchSqlKeyFields
+      );
+      return;
+    }
+
+    if (streamingSourceFile && streamingSourceFormat) {
+      const outputFormats: Partial<Record<DataFormat, StreamingFormat>> = {
+        csv: 'csv',
+        json: 'json',
+        xml: 'xml',
+        excel: 'excel',
+        sql: 'sql',
+      };
+
+      const targetFormat = outputFormats[outputFormat];
+
+      if (!targetFormat) {
+        setOutputData(
+          `Streaming conversion to ${outputFormat.toUpperCase()} is not supported yet. Please choose CSV, JSON, XML, or XLSX.`
+        );
+        setStreamingReady(false);
+        return;
+      }
+
+      const previousClient = streamingClientRef.current;
+      streamingClientRef.current = null;
+
+      if (previousClient) {
+        previousClient.cancel();
+        await previousClient.promise.catch(() => undefined);
+        await previousClient.removeOutput().catch(() => undefined);
+      }
+
+      setStreamingReady(false);
+      setStreamingPreviewTruncated(false);
+      setStreamingProgress({ chunks: 0, rows: 0, parseErrors: 0 });
+      setOutputBlob(null);
+      setConvertedRows([]);
+      setOutputViewMode('code');
+      setOutputData('Starting streaming conversion...');
+
+      try {
+        const client = createStreamingClient({
+          file: streamingSourceFile,
+          inputFormat: streamingSourceFormat,
+          outputFormat: targetFormat,
+          selectedFields: availableFields.filter((field) =>
+            selectedFields.includes(field) ||
+            (outputFormat === 'sql' &&
+              (sqlMode === 'update' || sqlMode === 'create') &&
+              sqlKeyFields.includes(field))
+          ),
+          fieldRenames,
+          jsonIndent: outputFormat === 'json' ? jsonIndentOverride : undefined,
+          sqlMode: outputFormat === 'sql' ? sqlMode : undefined,
+          tableName: outputFormat === 'sql' ? sqlTableName : undefined,
+          keyColumns: outputFormat === 'sql'
+            ? sqlKeyFields.map((field) => fieldRenames[field] ?? field)
+            : undefined,
+          onProgress(progress) {
+            setStreamingProgress(progress);
+          },
+        });
+
+        streamingClientRef.current = client;
+
+        const result = await client.promise;
+
+        if (streamingClientRef.current !== client) {
+          await client.removeOutput().catch(() => undefined);
+          return;
+        }
+
+        setRecordCount(result.rows);
+        setStreamingProgress({
+          chunks: result.chunks,
+          rows: result.rows,
+          parseErrors: result.parseErrors,
+        });
+
+        if (targetFormat === 'excel') {
+          setOutputData(
+            `XLSX output is ready. ${result.rows.toLocaleString()} record(s) converted. Download the file to view it.`
+          );
+          setStreamingPreviewTruncated(false);
+        } else {
+          const preview = await client.readPreview(5 * 1024 * 1024);
+
+          if (streamingClientRef.current !== client) return;
+
+          setOutputData(preview.text);
+          setStreamingPreviewTruncated(preview.truncated);
+        }
+
+        setStreamingReady(true);
+      } catch (error) {
+        const client = streamingClientRef.current;
+        streamingClientRef.current = null;
+
+        if (client) {
+          await client.promise.catch(() => undefined);
+          await client.removeOutput().catch(() => undefined);
+        }
+
+        setStreamingReady(false);
+        setStreamingPreviewTruncated(false);
+        setOutputBlob(null);
+        setRecordCount(0);
+        const message = error instanceof Error ? error.message : 'Unknown streaming conversion error';
+        setOutputData(`Conversion error: ${message}`);
+      }
+
       return;
     }
 
@@ -497,7 +882,7 @@ export default function App() {
       const filtered = activeInputFormat === 'json' && outputFormat === 'json'
         ? filterJsonRows(rows, jsonFieldTree, jsonFieldSelection, fieldRenames)
         : rows.map((row) => {
-            const result: Record<string, any> = {};
+            const result: Record<string, unknown> = {};
             fields.forEach((field) => {
               if (Object.prototype.hasOwnProperty.call(row, field)) {
                 result[field] = row[field];
@@ -530,13 +915,31 @@ export default function App() {
         setOutputBlob(null);
         setOutputData(
           outputFormat === 'sql'
-            ? serializeSQL(renamedRows, renamedFields, sqlTableName)
+            ? sqlMode === 'update' || sqlMode === 'create'
+              ? (() => {
+                  const sourceFields = Array.from(new Set([...fields, ...sqlKeyFields]));
+                  const sqlColumns = sourceFields.map((field) => fieldRenames[field] ?? field);
+                  const keyColumns = sqlKeyFields.map((field) => fieldRenames[field] ?? field);
+                  const sqlRows = rows.map((row) =>
+                    Object.fromEntries(
+                      sourceFields
+                        .filter((field) => Object.prototype.hasOwnProperty.call(row, field))
+                        .map((field) => [fieldRenames[field] ?? field, row[field]])
+                    )
+                  );
+
+                  return sqlMode === 'update'
+                    ? serializeSQLUpdate(sqlRows, sqlColumns, keyColumns, sqlTableName)
+                    : serializeSQLCreateTable(sqlRows, sqlColumns, sqlTableName, keyColumns);
+                })()
+              : serializeSQL(renamedRows, renamedFields, sqlTableName)
             : serializeRows(
                 renamedRows,
                 outputFormat,
                 activeInputFormat === 'json' && outputFormat === 'json'
                   ? Object.keys(renamedRows[0] ?? {})
-                  : renamedFields
+                  : renamedFields,
+                jsonIndentOverride
               )
         );
       }
@@ -550,9 +953,11 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (previewMode !== 'single') return;
-    handleConvert();
-  }, [previewMode, inputData, activeInputFormat, outputFormat, selectedFields, availableFields, jsonFieldTree, jsonFieldSelection, fieldRenames, parseRawToJS, sqlTableName]);
+    if (previewMode !== 'single' || streamingSourceFile) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Refresh conversion output when its inputs change.
+    void handleConvert();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleConvert uses the latest render state; its input dependencies are listed explicitly.
+  }, [previewMode, inputData, activeInputFormat, outputFormat, selectedFields, availableFields, jsonFieldTree, jsonFieldSelection, fieldRenames, parseRawToJS, sqlTableName, sqlMode, sqlKeyFields, streamingSourceFile]);
 
   const handleCopy = async () => {
     if (!outputData || outputFormat === 'excel') return;
@@ -604,6 +1009,11 @@ export default function App() {
       anchor.remove();
 
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return;
+    }
+
+    if (streamingReady && streamingClientRef.current) {
+      await streamingClientRef.current.download();
       return;
     }
 
@@ -851,7 +1261,7 @@ export default function App() {
 
             <div className="flex justify-center my-2">
               <button
-                onClick={handleConvert}
+                onClick={() => void handleConvert()}
                 className="w-full py-2 bg-gradient-to-r from-[#ff6be4] to-rose-500 hover:brightness-110 hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0 active:scale-[0.98] text-white rounded-xl text-xs font-bold shadow-md shadow-pink-500/25 flex items-center justify-center gap-2 transition-all duration-200"
               >
                 <ArrowRightLeft className="w-4 h-4 animate-spin-slow" />
@@ -1069,7 +1479,7 @@ export default function App() {
         <section className="lg:col-span-9 flex flex-col space-y-6 min-h-0 lg:h-full">
           
           {/* Quick Samples & Actions */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-wrap items-center justify-between gap-4">
+          <div className={`bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm flex flex-wrap items-center justify-between gap-4 ${expandedPreview ? "hidden" : ""}`}>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 mr-2 flex items-center">
                 <Layers className="w-3.5 h-3.5 mr-1.5 text-[#ff6be4]" /> Quick Samples:
@@ -1108,10 +1518,10 @@ export default function App() {
           </div>
 
           {/* Dual Editor Grid */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch flex-1 min-h-0">
+          <div className={`grid grid-cols-1 ${expandedPreview ? "lg:grid-cols-1" : "lg:grid-cols-2"} gap-6 items-stretch flex-1 min-h-0`}>
             
             {/* Input Data Editor */}
-            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col overflow-hidden min-h-[420px] lg:h-full">
+            <div className={`bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col overflow-hidden min-h-[420px] lg:h-full ${expandedPreview === "output" ? "hidden" : ""}`}>
               <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50">
                 <div className="flex items-center space-x-2">
                   <FileCode className="w-4 h-4 text-[#ff6be4]" />
@@ -1129,6 +1539,17 @@ export default function App() {
                     className={`p-1.5 rounded-lg text-xs font-medium ${inputViewMode === 'table' ? 'bg-white dark:bg-slate-700 text-[#ff6be4] shadow-sm' : 'text-slate-500'}`}
                   >
                     <Table className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedPreview((value) => value === 'input' ? null : 'input')}
+                    title={expandedPreview === 'input' ? 'Restore preview' : 'Expand preview'}
+                    aria-label={expandedPreview === 'input' ? 'Restore preview' : 'Expand preview'}
+                    className="p-1.5 rounded-lg text-slate-500 hover:text-[#ff6be4] hover:bg-white/70 dark:hover:bg-slate-700 transition-colors"
+                  >
+                    {expandedPreview === 'input'
+                      ? <Minimize2 className="w-3.5 h-3.5" />
+                      : <Maximize2 className="w-3.5 h-3.5" />}
                   </button>
                 </div>
               </div>
@@ -1200,9 +1621,9 @@ export default function App() {
                 {inputViewMode === 'code' ? (
                   <CodePreview
                     value={inputData}
-                    language={activeInputFormat}
+                    language={streamingSourceFile ? 'json' : activeInputFormat}
                     editable
-                    onChange={setInputData}
+                    onChange={handleInputDataChange}
                     placeholder="Paste or type your source data here..."
                   />
                 ) : (
@@ -1215,7 +1636,7 @@ export default function App() {
             </div>
 
             {/* Converted Output Editor */}
-            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col overflow-hidden min-h-[420px] lg:h-full">
+            <div className={`bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col overflow-hidden min-h-[420px] lg:h-full ${expandedPreview === "input" ? "hidden" : ""}`}>
               <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50">
                 <div className="flex items-center space-x-2">
                   <FileText className="w-4 h-4 text-[#ff6be4]" />
@@ -1230,9 +1651,21 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => setOutputViewMode('table')}
-                    className={`p-1.5 rounded-lg text-xs font-medium ${outputViewMode === 'table' ? 'bg-white dark:bg-slate-700 text-[#ff6be4] shadow-sm' : 'text-slate-500'}`}
+                    disabled={Boolean(streamingSourceFile)}
+                    className={`p-1.5 rounded-lg text-xs font-medium ${outputViewMode === 'table' ? 'bg-white dark:bg-slate-700 text-[#ff6be4] shadow-sm' : 'text-slate-500'} disabled:cursor-not-allowed disabled:opacity-40`}
                   >
                     <Table className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedPreview((value) => value === 'output' ? null : 'output')}
+                    title={expandedPreview === 'output' ? 'Restore preview' : 'Expand preview'}
+                    aria-label={expandedPreview === 'output' ? 'Restore preview' : 'Expand preview'}
+                    className="p-1.5 rounded-lg text-slate-500 hover:text-[#ff6be4] hover:bg-white/70 dark:hover:bg-slate-700 transition-colors"
+                  >
+                    {expandedPreview === 'output'
+                      ? <Minimize2 className="w-3.5 h-3.5" />
+                      : <Maximize2 className="w-3.5 h-3.5" />}
                   </button>
                 </div>
               </div>
@@ -1253,49 +1686,183 @@ export default function App() {
               
 
               <div className="p-4 flex-1 min-h-0 min-w-0 flex flex-col">
+                {previewMode === 'single' && streamingSourceFile && (
+                  <div className="mb-3 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+                      <span>
+                        {streamingReady
+                          ? 'Streaming conversion completed'
+                          : streamingProgress.chunks > 0
+                            ? 'Streaming conversion in progress'
+                            : 'Streaming source ready'}
+                      </span>
+                      <span>
+                        {streamingProgress.rows.toLocaleString()} rows · {streamingProgress.chunks.toLocaleString()} chunks · {streamingProgress.parseErrors.toLocaleString()} errors
+                      </span>
+                    </div>
+                    {streamingPreviewTruncated && (
+                      <div
+                        title="The preview is limited to 5 MB. Convert and download the file to view the complete output."
+                        className="rounded-lg border border-amber-300/70 bg-amber-50 dark:border-amber-700/60 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
+                      >
+                        The preview is limited to 5 MB. Convert and download the file to view the complete output.
+                      </div>
+                    )}
+                    {streamingReady && outputFormat === 'excel' && (
+                      <div className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+                        XLSX output is ready. Download the file to view it.
+                      </div>
+                    )}
+                  </div>
+                )}
                 {previewMode === 'batch' && outputFormat === 'sql' && (
                   <div className="mb-3 flex flex-wrap items-end gap-2">
-                    <label className="flex-1 min-w-[160px]">
-                      <span className="mb-1 block text-xs font-semibold text-slate-500 dark:text-slate-400">
-                        SQL Table Name
-                      </span>
+                    <div className="flex h-10 items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 p-1">
+                      <button
+                        type="button"
+                        onClick={() => setBatchSqlMode('insert')}
+                        className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${batchSqlMode === 'insert' ? 'bg-pink-500 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+                      >
+                        INSERT
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBatchSqlMode('create')}
+                        className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${batchSqlMode === 'create' ? 'bg-pink-500 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+                      >
+                        CREATE
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBatchSqlMode('update')}
+                        className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${batchSqlMode === 'update' ? 'bg-pink-500 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+                      >
+                        UPDATE
+                      </button>
+                    </div>
+                    <label className="flex-1 min-w-[150px]">
                       <input
                         type="text"
                         value={batchSqlTableName}
                         onChange={(event) => setBatchSqlTableName(event.target.value)}
-                        placeholder="data"
-                        className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs text-slate-800 dark:text-slate-200 outline-none focus:border-pink-400"
+                        placeholder="Table name"
+                        className="h-10 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-xs text-slate-800 dark:text-slate-200 outline-none focus:border-pink-400"
                       />
                     </label>
-                    <button
+                    {(batchSqlMode === 'update' || batchSqlMode === 'create') && (
+                      <details className="relative min-w-[150px]">
+                        <summary className="flex h-10 cursor-pointer list-none items-center justify-between gap-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-xs text-slate-700 dark:text-slate-200 hover:border-pink-400">
+                          <span>{batchSqlMode === 'update' ? 'Keys' : 'Primary key'} · {batchSqlKeyFields.length}</span>
+                          <span className="text-slate-400">⌄</span>
+                        </summary>
+                        <div className="absolute right-0 top-full z-30 mt-1 max-h-56 min-w-[180px] overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2 shadow-xl">
+                          {availableFields.map((field) => (
+                            <label key={field} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800">
+                              <input
+                                type="checkbox"
+                                checked={batchSqlKeyFields.includes(field)}
+                                onChange={(event) => setBatchSqlKeyFields((current) =>
+                                  event.target.checked
+                                    ? [...current, field]
+                                    : current.filter((item) => item !== field)
+                                )}
+                                className="accent-pink-500"
+                              />
+                              <span>{field}</span>
+                            </label>
+                          ))}
+                          {availableFields.length === 0 && (
+                            <p className="px-2 py-2 text-xs text-slate-400">No fields</p>
+                          )}
+                        </div>
+                      </details>
+                    )}
+                    {batchSqlMode === 'insert' && (
+                      <button
                       type="button"
                       onClick={() => {
                         if (batch.activeTask) {
-                          void batch.formatSQLTask(batch.activeTask.id, selectedFields, batchSqlTableName);
+                          void batch.formatSQLTask(
+                            batch.activeTask.id,
+                            selectedFields,
+                            batchSqlTableName,
+                            batchSqlMode,
+                            batchSqlKeyFields
+                          );
                         }
                       }}
                       disabled={!batch.activeTask || batch.activeTask.status !== 'completed'}
-                      className="rounded-lg bg-gradient-to-r from-[#ff6be4] to-rose-500 px-4 py-2 text-xs font-semibold text-white shadow-sm transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="inline-flex h-10 items-center justify-center rounded-lg bg-gradient-to-r from-[#ff6be4] to-rose-500 px-4 text-xs font-semibold text-white shadow-sm transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Format SQL
                     </button>
+                    )}
                   </div>
                 )}
                 {previewMode === 'single' && outputFormat === 'sql' && (
                   <div className="mb-3 flex flex-wrap items-end gap-2">
-                    <label className="flex-1 min-w-[160px]">
-                      <span className="mb-1 block text-xs font-semibold text-slate-500 dark:text-slate-400">
-                        SQL Table Name
-                      </span>
+                    <div className="flex h-10 items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 p-1">
+                      <button
+                        type="button"
+                        onClick={() => setSqlMode('insert')}
+                        className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${sqlMode === 'insert' ? 'bg-pink-500 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+                      >
+                        INSERT
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSqlMode('create')}
+                        className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${sqlMode === 'create' ? 'bg-pink-500 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+                      >
+                        CREATE
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSqlMode('update')}
+                        className={`inline-flex h-8 items-center rounded-md px-3 text-xs font-semibold transition-colors ${sqlMode === 'update' ? 'bg-pink-500 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+                      >
+                        UPDATE
+                      </button>
+                    </div>
+                    <label className="flex-1 min-w-[150px]">
                       <input
                         type="text"
                         value={sqlTableName}
                         onChange={(event) => setSqlTableName(event.target.value)}
-                        placeholder="data"
-                        className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs text-slate-800 dark:text-slate-200 outline-none focus:border-pink-400"
+                        placeholder="Table name"
+                        className="h-10 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-xs text-slate-800 dark:text-slate-200 outline-none focus:border-pink-400"
                       />
                     </label>
-                    <button
+                    {(sqlMode === 'update' || sqlMode === 'create') && (
+                      <details className="relative min-w-[150px]">
+                        <summary className="flex h-10 cursor-pointer list-none items-center justify-between gap-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-xs text-slate-700 dark:text-slate-200 hover:border-pink-400">
+                          <span>{sqlMode === 'update' ? 'Keys' : 'Primary key'} · {sqlKeyFields.length}</span>
+                          <span className="text-slate-400">⌄</span>
+                        </summary>
+                        <div className="absolute right-0 top-full z-30 mt-1 max-h-56 min-w-[180px] overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2 shadow-xl">
+                          {availableFields.map((field) => (
+                            <label key={field} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800">
+                              <input
+                                type="checkbox"
+                                checked={sqlKeyFields.includes(field)}
+                                onChange={(event) => setSqlKeyFields((current) =>
+                                  event.target.checked
+                                    ? [...current, field]
+                                    : current.filter((item) => item !== field)
+                                )}
+                                className="accent-pink-500"
+                              />
+                              <span>{field}</span>
+                            </label>
+                          ))}
+                          {availableFields.length === 0 && (
+                            <p className="px-2 py-2 text-xs text-slate-400">No fields</p>
+                          )}
+                        </div>
+                      </details>
+                    )}
+                    {sqlMode === 'insert' && (
+                      <button
                       type="button"
                       onClick={() => {
                         try {
@@ -1306,10 +1873,45 @@ export default function App() {
                         }
                       }}
                       disabled={convertedRows.length === 0}
-                      className="rounded-lg bg-gradient-to-r from-[#ff6be4] to-rose-500 px-4 py-2 text-xs font-semibold text-white shadow-sm transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="inline-flex h-10 items-center justify-center rounded-lg bg-gradient-to-r from-[#ff6be4] to-rose-500 px-4 text-xs font-semibold text-white shadow-sm transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Format SQL
                     </button>
+                    )}
+                  </div>
+                )}
+                {previewMode === 'single' && outputFormat === 'json' && (
+                  <div className="mb-3 flex items-center gap-3">
+                    <label
+                      htmlFor="json-indent"
+                      className="text-xs font-semibold text-slate-500 dark:text-slate-400"
+                    >
+                      JSON indentation
+                    </label>
+                    <input
+                      id="json-indent"
+                      type="number"
+                      min={0}
+                      max={10}
+                      step={1}
+                      value={jsonIndent}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        if (value === '') return;
+
+                        const nextIndent = Math.max(
+                          0,
+                          Math.min(10, Math.trunc(Number(value) || 0)),
+                        );
+
+                        setJsonIndent(nextIndent);
+                        void handleConvert(nextIndent);
+                      }}
+                      className="w-20 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-1.5 text-xs text-slate-800 dark:text-slate-200 outline-none focus:border-pink-400"
+                    />
+                    <span className="text-xs text-slate-400">
+                      0 = Compact · 1–10 = Custom spaces
+                    </span>
                   </div>
                 )}
                 {outputViewMode === 'code' ? (
@@ -1354,7 +1956,9 @@ export default function App() {
                     onClick={handleDownload}
                     disabled={previewMode === 'batch'
                       ? !batch.tasks.some((task) => task.status === 'completed' && task.outputFormat)
-                      : !outputData || (outputFormat === 'excel' && !outputBlob)}
+                      : streamingSourceFile
+                        ? !streamingReady
+                        : !outputData || (outputFormat === 'excel' && !outputBlob)}
                     className="px-4 py-2 bg-gradient-to-r from-[#ff6be4] to-rose-500 hover:brightness-110 hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0 active:scale-[0.98] text-white text-xs font-semibold rounded-xl shadow-md shadow-pink-500/25 transition-all duration-200 flex items-center"
                   >
                     <Download className="w-3.5 h-3.5 mr-1.5" /> Download File
@@ -1409,7 +2013,7 @@ export default function App() {
       {activeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/40 backdrop-blur-md">
           <div
-            className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border border-slate-200 dark:border-slate-800 rounded-3xl overflow-y-auto p-8 shadow-2xl relative space-y-5"
+            className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border border-slate-200 dark:border-slate-800 rounded-3xl overflow-hidden p-8 shadow-2xl relative flex flex-col"
             style={{
               width: 'min(90vw, 672px, 113.333vh)',
               height: 'min(67.5vw, 504px, 85vh)',
@@ -1417,10 +2021,11 @@ export default function App() {
           >
             <button
               onClick={() => setActiveModal(null)}
-              className="absolute right-6 top-6 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              className="absolute right-6 top-6 z-20 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
             >
               <X className="w-5 h-5" />
             </button>
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain pr-2 space-y-5 modal-scroll-area [scrollbar-gutter:stable]">
 
             {activeModal === 'privacy' ? (
               <div className="space-y-4 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
@@ -1460,7 +2065,7 @@ export default function App() {
                 <section className="space-y-1">
                   <h3 className="font-bold text-slate-900 dark:text-white">4. Third-Party Services</h3>
                   <p>
-                    The website may rely on third-party hosting, libraries, or external links. Those providers operate under their own privacy policies and terms. When you follow an external link, your interaction is governed by the destination website's policies. We do not control third-party data practices.
+                    The website may rely on third-party hosting, libraries, or external links. Those providers operate under their own privacy policies and terms. When you follow an external link, your interaction is governed by the destination website&apos;s policies. We do not control third-party data practices.
                   </p>
                 </section>
 
@@ -1475,7 +2080,7 @@ export default function App() {
                 </section>
 
                 <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">6. Children's Privacy</h3>
+                  <h3 className="font-bold text-slate-900 dark:text-white">6. Children&apos;s Privacy</h3>
                   <p>
                     This service is not specifically directed at children. We do not knowingly request personal information from children through the conversion interface.
                   </p>
@@ -1489,7 +2094,7 @@ export default function App() {
                 </section>
 
                 <p>
-                  For project information, visit the <a href="https://github.com/newddf/" target="_blank" rel="noopener noreferrer" className="text-[#ff6be4] underline">project maintainer's GitHub profile</a>.
+                  For project information, visit the <a href="https://github.com/newddf/" target="_blank" rel="noopener noreferrer" className="text-[#ff6be4] underline">project maintainer&apos;s GitHub profile</a>.
                 </p>
               </div>
             ) : (
@@ -1537,7 +2142,7 @@ export default function App() {
                 <section className="space-y-1">
                   <h3 className="font-bold text-slate-900 dark:text-white">5. Intellectual Property</h3>
                   <p>
-                    The website's original design, code, and branding are protected by applicable intellectual property laws. Third-party libraries and components remain subject to their respective licenses. These terms do not transfer ownership of your input data to the project maintainer.
+                    The website&apos;s original design, code, and branding are protected by applicable intellectual property laws. Third-party libraries and components remain subject to their respective licenses. These terms do not transfer ownership of your input data to the project maintainer.
                   </p>
                 </section>
 
@@ -1551,7 +2156,7 @@ export default function App() {
                 <section className="space-y-1">
                   <h3 className="font-bold text-slate-900 dark:text-white">7. Disclaimer of Warranties</h3>
                   <p>
-                    To the extent permitted by applicable law, the service is provided "as is" and "as available", without warranties of any kind, whether express or implied. We do not warrant that the service will be error-free, secure, or suitable for every purpose.
+                    To the extent permitted by applicable law, the service is provided &quot;as is&quot; and &quot;as available&quot;, without warranties of any kind, whether express or implied. We do not warrant that the service will be error-free, secure, or suitable for every purpose.
                   </p>
                 </section>
 
@@ -1581,6 +2186,7 @@ export default function App() {
             >
               Acknowledge & Close
             </button>
+            </div>
           </div>
         </div>
       )}

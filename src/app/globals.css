@@ -130,3 +130,8 @@
     color: #f28bb8;
   }
 }
+
+/* Modal scrollbar spacing */
+.modal-scroll-area::-webkit-scrollbar-track {
+  margin-block: 44px 12px;
+}

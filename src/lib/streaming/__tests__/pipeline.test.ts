@@ -89,6 +89,76 @@ describe('Streaming Pipeline', () => {
     expect(sink.aborted).toBe(false);
   });
 
+  it('filters, renames, and reorders fields before writing each batch', async () => {
+    const file = createFile(
+      ['[{"id":1,"name":"Alpha","score":10},{"id":2,"name":"Beta","score":20}]'],
+      'records.json',
+    );
+    const sink = new MemorySink();
+
+    await convertStreamingFile({
+      file,
+      inputFormat: 'json',
+      outputFormat: 'json',
+      sink,
+      batchSize: 1,
+      selectedFields: ['score', 'name'],
+      fieldRenames: {
+        score: 'points',
+        name: 'label',
+      },
+    });
+
+    expect(JSON.parse(sink.output)).toEqual([
+      { points: 10, label: 'Alpha' },
+      { points: 20, label: 'Beta' },
+    ]);
+    expect(sink.closed).toBe(true);
+  });
+
+  it('writes empty records when no fields are selected', async () => {
+    const file = createFile(
+      ['[{"id":1,"name":"Alpha"}]'],
+      'records.json',
+    );
+    const sink = new MemorySink();
+
+    await convertStreamingFile({
+      file,
+      inputFormat: 'json',
+      outputFormat: 'json',
+      sink,
+      selectedFields: [],
+    });
+
+    expect(JSON.parse(sink.output)).toEqual([{}]);
+  });
+
+  it('rejects duplicate output field names', async () => {
+    const file = createFile(
+      ['[{"first":"Alpha","second":"Beta"}]'],
+      'records.json',
+    );
+    const sink = new MemorySink();
+
+    await expect(
+      convertStreamingFile({
+        file,
+        inputFormat: 'json',
+        outputFormat: 'json',
+        sink,
+        selectedFields: ['first', 'second'],
+        fieldRenames: {
+          first: 'label',
+          second: 'label',
+        },
+      }),
+    ).rejects.toThrow('Duplicate output field name: label');
+
+    expect(sink.aborted).toBe(true);
+    expect(sink.closed).toBe(false);
+  });
+
   it('converts JSON to XML', async () => {
     const file = createFile(
       ['[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]'],
@@ -229,4 +299,85 @@ describe('Streaming Pipeline', () => {
     expect(sink.aborted).toBe(true);
     expect(sink.closed).toBe(false);
   });
+
+  it('converts JSON to SQL INSERT across multiple batches', async () => {
+    const file = createFile(
+      ['[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"},{"id":3,"name":"Carol"}]'],
+      'people.json',
+    );
+    const sink = new MemorySink();
+
+    const result = await convertStreamingFile({
+      file,
+      inputFormat: 'json',
+      outputFormat: 'sql',
+      sink,
+      batchSize: 1,
+      tableName: 'people',
+      sqlMode: 'insert',
+    });
+
+    expect(sink.output).toBe(
+      'INSERT INTO `people` (`id`, `name`)\nVALUES\n' +
+      "(1, 'Alice'),\n(2, 'Bob'),\n(3, 'Carol');\n"
+    );
+    expect(result.rows).toBe(3);
+    expect(sink.closed).toBe(true);
+  });
+
+  it('converts JSON to SQL UPDATE using key columns', async () => {
+    const file = createFile(
+      ['[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]'],
+      'people.json',
+    );
+    const sink = new MemorySink();
+
+    const result = await convertStreamingFile({
+      file,
+      inputFormat: 'json',
+      outputFormat: 'sql',
+      sink,
+      batchSize: 1,
+      tableName: 'people',
+      sqlMode: 'update',
+      keyColumns: ['id'],
+    });
+
+    expect(sink.output).toBe(
+      "UPDATE `people`\nSET\n  `name` = 'Alice'\nWHERE `id` = 1;\n" +
+      "UPDATE `people`\nSET\n  `name` = 'Bob'\nWHERE `id` = 2;\n"
+    );
+    expect(result.rows).toBe(2);
+    expect(sink.closed).toBe(true);
+  });
+
+  it('converts JSON to SQL CREATE TABLE with inferred types and primary key', async () => {
+    const file = createFile(
+      ['[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]'],
+      'people.json',
+    );
+    const sink = new MemorySink();
+
+    const result = await convertStreamingFile({
+      file,
+      inputFormat: 'json',
+      outputFormat: 'sql',
+      sink,
+      batchSize: 1,
+      tableName: 'people',
+      sqlMode: 'create',
+      keyColumns: ['id'],
+    });
+
+    expect(sink.output).toBe(
+      'CREATE TABLE `people` (\n' +
+      '  `id` BIGINT,\n' +
+      '  `name` VARCHAR(5),\n' +
+      '  PRIMARY KEY (`id`)\n' +
+      ');\n'
+    );
+    expect(result.rows).toBe(2);
+    expect(sink.closed).toBe(true);
+  });
+
 });

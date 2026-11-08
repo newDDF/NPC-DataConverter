@@ -1,3 +1,5 @@
+export type SQLMode = 'insert' | 'update' | 'create';
+
 export type DataFormat = 'json' | 'csv' | 'excel' | 'xml' | 'yaml' | 'md' | 'sql';
 export type InputFormatOption = 'auto' | DataFormat;
 export type ViewMode = 'code' | 'table';

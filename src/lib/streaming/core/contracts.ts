@@ -30,6 +30,10 @@ export interface StreamingOutputSink {
 
 export type WriterOptions = {
   fileName?: string;
+  jsonIndent?: number;
+  sqlMode?: 'insert' | 'update' | 'create';
+  tableName?: string;
+  keyColumns?: string[];
 };
 
 export interface StreamingWriterSession {

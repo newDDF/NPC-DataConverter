@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent } from 'react';
 import type { StreamingFormat } from '@/lib/streaming/types';
 
@@ -31,13 +31,14 @@ type WorkerMessage =
   | { status: 'cancelled' }
   | { status: 'error'; message: string };
 
-const FORMATS: StreamingFormat[] = ['csv', 'json', 'xml'];
+const INPUT_FORMATS: Exclude<StreamingFormat, 'sql'>[] = ['csv', 'json', 'excel', 'xml'];
+const OUTPUT_FORMATS: StreamingFormat[] = [...INPUT_FORMATS, 'sql'];
 
-const FORMAT_ACCEPT: Record<StreamingFormat, string> = {
+const FORMAT_ACCEPT: Record<Exclude<StreamingFormat, 'sql'>, string> = {
   csv: '.csv,text/csv',
   json: '.json,application/json',
   xml: '.xml,application/xml,text/xml',
-  excel: '',
+  excel: '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 };
 
 const formatBytes = (bytes: number) => {
@@ -46,8 +47,20 @@ const formatBytes = (bytes: number) => {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 };
 
+const FORMAT_EXTENSIONS: Record<StreamingFormat, string> = {
+  csv: 'csv',
+  json: 'json',
+  excel: 'xlsx',
+  xml: 'xml',
+  sql: '.sql',
+};
+
+function formatLabel(format: StreamingFormat): string {
+  return format === 'excel' ? 'XLSX' : format.toUpperCase();
+}
+
 function hasExpectedExtension(file: File, format: StreamingFormat) {
-  return file.name.toLowerCase().endsWith(`.${format}`);
+  return file.name.toLowerCase().endsWith(`.${FORMAT_EXTENSIONS[format]}`);
 }
 
 export default function StreamingWorkspace() {
@@ -60,6 +73,9 @@ export default function StreamingWorkspace() {
   const [file, setFile] = useState<File | null>(null);
   const [inputFormat, setInputFormat] = useState<StreamingFormat>('csv');
   const [outputFormat, setOutputFormat] = useState<StreamingFormat>('json');
+  const [sqlMode, setSqlMode] = useState<'insert' | 'update' | 'create'>('insert');
+  const [sqlTableName, setSqlTableName] = useState('data');
+  const [sqlKeyColumns, setSqlKeyColumns] = useState('');
   const [status, setStatus] = useState<Status>('idle');
   const [chunks, setChunks] = useState(0);
   const [rows, setRows] = useState(0);
@@ -68,19 +84,19 @@ export default function StreamingWorkspace() {
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
 
-  const resetResults = () => {
+  const resetResults = useCallback(() => {
     setChunks(0);
     setRows(0);
     setParseErrors(0);
     setOutputFileName('');
     setError('');
-  };
+  }, []);
 
-  const applyFile = (selectedFile: File) => {
+  const applyFile = useCallback((selectedFile: File) => {
     setFile(selectedFile);
     setStatus('idle');
     resetResults();
-  };
+  }, [resetResults]);
 
   useEffect(() => {
     unmountingRef.current = false;
@@ -192,13 +208,13 @@ export default function StreamingWorkspace() {
 
       workerRef.current = null;
     };
-  }, []);
+  }, [applyFile]);
 
   const selectFile = (selectedFile?: File) => {
     if (!selectedFile) return;
 
     if (!hasExpectedExtension(selectedFile, inputFormat)) {
-      setError(`Please select a .${inputFormat} file.`);
+      setError(`Please select a .${FORMAT_EXTENSIONS[inputFormat]} file.`);
       setStatus('error');
       return;
     }
@@ -245,7 +261,7 @@ export default function StreamingWorkspace() {
     activeRef.current = true;
 
     const baseName = file.name.replace(/\.[^/.]+$/, '');
-    const outputName = `converted_${Date.now()}_${baseName}.${outputFormat}`;
+    const outputName = `converted_${Date.now()}_${baseName}.${FORMAT_EXTENSIONS[outputFormat]}`;
 
     try {
       workerRef.current.postMessage({
@@ -255,6 +271,9 @@ export default function StreamingWorkspace() {
           inputFormat,
           outputFormat,
           fileName: outputName,
+          sqlMode,
+          tableName: sqlTableName,
+          keyColumns: sqlKeyColumns.split(',').map((key) => key.trim()).filter(Boolean),
         },
       });
     } catch (startError) {
@@ -334,9 +353,9 @@ export default function StreamingWorkspace() {
                 disabled={isBusy}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800"
               >
-                {FORMATS.map((format) => (
+                {INPUT_FORMATS.map((format) => (
                   <option key={format} value={format}>
-                    {format.toUpperCase()}
+                    {formatLabel(format)}
                   </option>
                 ))}
               </select>
@@ -350,14 +369,38 @@ export default function StreamingWorkspace() {
                 disabled={isBusy}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800"
               >
-                {FORMATS.map((format) => (
+                {OUTPUT_FORMATS.map((format) => (
                   <option key={format} value={format}>
-                    {format.toUpperCase()}
+                    {formatLabel(format)}
                   </option>
                 ))}
               </select>
             </label>
           </div>
+
+          {outputFormat === 'sql' && (
+            <div className="grid gap-4 rounded-xl border border-pink-200 bg-pink-50/50 p-4 dark:border-pink-900 dark:bg-pink-950/20 sm:grid-cols-2">
+              <label className="space-y-2 text-sm font-medium">
+                <span>SQL mode</span>
+                <select value={sqlMode} onChange={(event) => setSqlMode(event.target.value as typeof sqlMode)} disabled={isBusy} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800">
+                  <option value="insert">INSERT</option>
+                  <option value="create">CREATE TABLE</option>
+                  <option value="update">UPDATE</option>
+                </select>
+              </label>
+              <label className="space-y-2 text-sm font-medium">
+                <span>Table name</span>
+                <input value={sqlTableName} onChange={(event) => setSqlTableName(event.target.value)} disabled={isBusy} placeholder="data" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800" />
+              </label>
+              {sqlMode !== 'insert' && (
+                <label className="space-y-2 text-sm font-medium sm:col-span-2">
+                  <span>{sqlMode === 'create' ? 'Primary key columns (optional)' : 'Key columns (required)'}</span>
+                  <input value={sqlKeyColumns} onChange={(event) => setSqlKeyColumns(event.target.value)} disabled={isBusy} placeholder="id, code" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800" />
+                  <span className="text-xs font-normal text-slate-500">Separate column names with commas.</span>
+                </label>
+              )}
+            </div>
+          )}
 
           <div
             role="button"
@@ -409,7 +452,7 @@ export default function StreamingWorkspace() {
           <input
             ref={inputRef}
             type="file"
-            accept={FORMAT_ACCEPT[inputFormat]}
+            accept={FORMAT_ACCEPT[inputFormat as Exclude<StreamingFormat, 'sql'>]}
             onChange={handleFileChange}
             className="hidden"
           />

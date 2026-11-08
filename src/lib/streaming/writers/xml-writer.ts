@@ -3,7 +3,6 @@ import type {
   StreamingRecord,
   StreamingWriter,
   StreamingWriterSession,
-  WriterOptions,
 } from '../core/contracts';
 
 const ROOT_NAME = 'records';
@@ -260,7 +259,6 @@ export class XmlWriter implements StreamingWriter {
 
   async create(
     sink: StreamingOutputSink,
-    _options: WriterOptions = {},
   ): Promise<StreamingWriterSession> {
     let closed = false;
     let rootClosed = false;

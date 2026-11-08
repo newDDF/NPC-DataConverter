@@ -39,6 +39,7 @@ const languageMap: Record<CodeFormat, string> = {
 };
 
 const DEFAULT_MAX_PREVIEW_LENGTH = 100 * 1024;
+const MAX_HIGHLIGHT_LENGTH = 256 * 1024;
 
 export default function CodePreview({
   value,
@@ -66,6 +67,11 @@ export default function CodePreview({
     if (!value) return '';
 
     const source = editable ? value : previewValue;
+
+    if (source.length > MAX_HIGHLIGHT_LENGTH) {
+      return Prism.util.encode(source) as string;
+    }
+
     const grammar = Prism.languages[prismLanguage];
 
     if (!grammar) return Prism.util.encode(source) as string;
