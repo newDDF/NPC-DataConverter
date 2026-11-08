@@ -5,6 +5,7 @@ import {
   Clock3, LoaderCircle, CheckCircle2, AlertCircle,
 } from 'lucide-react';
 import type { BatchTask } from '@/types/batch';
+import type { Dictionary } from '@/i18n/types';
 
 function sizeLabel(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -19,7 +20,12 @@ function Status({ task }: { task: BatchTask }) {
   return <Clock3 className="w-3.5 h-3.5 text-slate-400" />;
 }
 
+type BatchLabels = Dictionary["batch"] & {
+  download: string;
+};
+
 interface SharedProps {
+  labels: BatchLabels;
   tasks: BatchTask[];
   activeTaskId: string | null;
   onSelect: (id: string) => void;
@@ -36,7 +42,7 @@ interface InputProps extends Omit<SharedProps, 'onDownload'> {
 
 export function BatchInputPanel({
   open, onToggle, tasks, activeTaskId, onSelect, onRemove,
-  completedCount, onClearCompleted,
+  completedCount, onClearCompleted, labels,
 }: InputProps) {
   return (
     <div className="border-b border-slate-200 dark:border-slate-800">
@@ -47,8 +53,8 @@ export function BatchInputPanel({
       >
         <span className="flex items-center gap-2 font-semibold text-slate-600 dark:text-slate-300">
           <Layers className="w-3.5 h-3.5 text-[#ff6be4]" />
-          Batch files
-          <span className="text-slate-400 font-normal">{tasks.length} files</span>
+          {labels.inputTitle}
+          <span className="text-slate-400 font-normal">{tasks.length} {labels.files}</span>
         </span>
         <span className="flex items-center gap-3">
           <span
@@ -59,7 +65,7 @@ export function BatchInputPanel({
             }}
             className={`text-[11px] font-medium ${completedCount ? 'text-rose-400 hover:text-rose-500' : 'text-slate-400 opacity-40'}`}
           >
-            Clear completed
+            {labels.clearCompleted}
           </span>
           <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
         </span>
@@ -68,12 +74,12 @@ export function BatchInputPanel({
       {open && (
         <div className="px-3 pb-3 space-y-1 bg-slate-50/70 dark:bg-slate-950/30">
           <div className="grid grid-cols-[minmax(0,1fr)_75px_65px] gap-2 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-400 font-semibold">
-            <span>Data</span><span>Size</span><span>Records</span>
+            <span>{labels.data}</span><span>{labels.size}</span><span>{labels.records}</span>
           </div>
 
           <div className="max-h-56 overflow-y-auto space-y-1">
             {tasks.length === 0 ? (
-              <p className="text-xs text-slate-400 text-center py-3">No batch files added.</p>
+              <p className="text-xs text-slate-400 text-center py-3">{labels.noFiles}</p>
             ) : tasks.map((task) => (
               <div
                 key={task.id}
@@ -90,7 +96,7 @@ export function BatchInputPanel({
                 <span className="text-slate-400">{sizeLabel(task.size)}</span>
                 <span className="flex items-center justify-between gap-1 text-slate-500">
                   {task.recordCount || '—'}
-                  <button type="button" onClick={() => onRemove(task.id)} title="Remove file" className="text-slate-400 hover:text-rose-500">
+                  <button type="button" onClick={() => onRemove(task.id)} title={labels.removeFile} className="text-slate-400 hover:text-rose-500">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </span>
@@ -109,7 +115,7 @@ interface OutputProps extends SharedProps {
 }
 
 export function BatchOutputPanel({
-  open, onToggle, tasks, onSelect, onDownload,
+  open, onToggle, tasks, onSelect, onDownload, labels,
 }: OutputProps) {
   const completed = tasks.filter((task) => task.status === 'completed').length;
 
@@ -122,8 +128,8 @@ export function BatchOutputPanel({
       >
         <span className="flex items-center gap-2 font-semibold text-slate-600 dark:text-slate-300">
           <Layers className="w-3.5 h-3.5 text-[#ff6be4]" />
-          Batch output
-          <span className="text-slate-400 font-normal">{completed}/{tasks.length} completed</span>
+          {labels.outputTitle}
+          <span className="text-slate-400 font-normal">{completed}/{tasks.length} {labels.completed}</span>
         </span>
         <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
@@ -131,7 +137,7 @@ export function BatchOutputPanel({
       {open && (
         <div className="px-3 pb-3 max-h-56 overflow-y-auto space-y-1 bg-slate-50/70 dark:bg-slate-950/30">
           {tasks.length === 0 ? (
-            <p className="text-xs text-slate-400 text-center py-3">Batch output status will appear here.</p>
+            <p className="text-xs text-slate-400 text-center py-3">{labels.outputPending}</p>
           ) : tasks.map((task) => (
             <div key={task.id} className="flex items-center justify-between gap-2 px-2 py-2 rounded-lg hover:bg-white dark:hover:bg-slate-800">
               <button type="button" onClick={() => onSelect(task.id)} className="min-w-0 flex items-center gap-2 text-left">
@@ -143,7 +149,7 @@ export function BatchOutputPanel({
               </button>
               {task.status === 'completed' && (
                 <button type="button" onClick={() => onDownload(task)} className="shrink-0 px-2 py-1.5 rounded-md text-xs text-[#e34ac8] hover:bg-pink-50 dark:hover:bg-pink-950/40 flex items-center gap-1">
-                  <Download className="w-3.5 h-3.5" /> Download
+                  <Download className="w-3.5 h-3.5" /> {labels.download}
                 </button>
               )}
             </div>

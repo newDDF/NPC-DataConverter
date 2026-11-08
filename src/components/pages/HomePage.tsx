@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import CodePreview from '@/components/CodePreview';
+import LanguageSwitcher from '@/components/LanguageSwitcher';
 import { useBatchTasks } from '@/hooks/useBatchTasks';
 import { readBatchSource, convertBatchRows, getBatchOutputExtension } from '@/lib/batch/convert';
 import JSZip from 'jszip';
@@ -43,6 +44,9 @@ import {
 } from 'lucide-react';
 
 import type { DataFormat, InputFormatOption, SQLMode } from '@/types/converter';
+import type { Locale } from '@/i18n/config';
+import { getDictionary } from '@/i18n';
+import { getLegalDocuments } from "@/i18n/legal";
 import type { StreamingFormat } from '@/lib/streaming/types';
 import type {
   StreamingClient,
@@ -239,7 +243,9 @@ const renderDataTable = (
   );
 };
 
-export default function App() {
+export default function HomePage({ locale = 'en' }: { locale?: Locale }) {
+  const dictionary = getDictionary(locale);
+  void dictionary;
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const batch = useBatchTasks();
   const [inputBatchOpen, setInputBatchOpen] = useState(false);
@@ -1197,7 +1203,7 @@ export default function App() {
     const nextName = editingFieldName.trim();
 
     if (!nextName) {
-      setFieldRenameError('Field name cannot be empty.');
+      setFieldRenameError(dictionary.home.fieldNameEmpty);
       return;
     }
 
@@ -1208,7 +1214,7 @@ export default function App() {
     });
 
     if (duplicate) {
-      setFieldRenameError('This field name is already in use.');
+      setFieldRenameError(dictionary.home.duplicateFieldName);
       return;
     }
 
@@ -1281,16 +1287,17 @@ export default function App() {
             </div>
             <div>
               <h1 className="font-bold text-lg tracking-tight bg-gradient-to-r from-[#ff6be4] to-pink-500 bg-clip-text text-transparent">
-                NPC-DateConverter
+                NPC-DataConverter
               </h1>
-              <p className="text-[10px] text-slate-400 font-mono -mt-1">Universal Multi-Format Engine</p>
+              <p className="text-[10px] text-slate-400 font-mono -mt-1">{dictionary.home.title}</p>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
+            <LanguageSwitcher />
             <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-600 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800/50">
               <ShieldCheck className="w-3.5 h-3.5" />
-              <span>100% Client Privacy</span>
+              <span>{dictionary.home.privacyBadge}</span>
             </div>
             <button
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
@@ -1317,7 +1324,7 @@ export default function App() {
           {/* Format Pipeline Unified Card */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm space-y-4">
             <div>
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-2">Source Format</span>
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-2">{dictionary.home.sourceFormat}</span>
               <div className="grid grid-cols-4 gap-1.5">
                 {(['auto', 'json', 'csv', 'excel', 'xml', 'yaml', 'md', 'sql'] as InputFormatOption[]).map((fmt) => (
                   <button
@@ -1341,12 +1348,12 @@ export default function App() {
                 className="w-full py-2 bg-gradient-to-r from-[#ff6be4] to-rose-500 hover:brightness-110 hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0 active:scale-[0.98] text-white rounded-xl text-xs font-bold shadow-md shadow-pink-500/25 flex items-center justify-center gap-2 transition-all duration-200"
               >
                 <ArrowRightLeft className="w-4 h-4 animate-spin-slow" />
-                <span>Convert Data</span>
+                <span>{dictionary.home.convert}</span>
               </button>
             </div>
 
             <div>
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-2">Target Format</span>
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block mb-2">{dictionary.home.targetFormat}</span>
               <div className="grid grid-cols-4 gap-1.5">
                 {(['json', 'csv', 'excel', 'xml', 'yaml', 'md', 'sql'] as DataFormat[]).map((fmt) => (
                   <button
@@ -1371,6 +1378,11 @@ export default function App() {
             activeInputFormat === 'json' &&
             outputFormat === 'json' ? (
               <JsonFieldManager
+                labels={{
+                  ...dictionary.jsonFields,
+                  fieldNameEmpty: dictionary.home.fieldNameEmpty,
+                  duplicateFieldName: dictionary.home.duplicateFieldName,
+                }}
                 nodes={jsonFieldTree}
                 selection={jsonFieldSelection}
                 onSelectionChange={setJsonFieldSelection}
@@ -1385,7 +1397,7 @@ export default function App() {
             <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center space-x-1.5">
                 <ListFilter className="w-4 h-4 text-[#ff6be4]" />
-                <span className="font-bold text-xs text-slate-800 dark:text-slate-200 uppercase tracking-wide">Fields (Drag to Reorder)</span>
+                <span className="font-bold text-xs text-slate-800 dark:text-slate-200 uppercase tracking-wide">{dictionary.home.fields} ({dictionary.home.dragToReorder})</span>
               </div>
               <span className="text-[10px] bg-pink-500/10 text-[#ff6be4] font-medium px-2 py-0.5 rounded-full">
                 {selectedFields.length}/{availableFields.length}
@@ -1398,7 +1410,7 @@ export default function App() {
                 type="text"
                 value={fieldSearchTerm}
                 onChange={(e) => setFieldSearchTerm(e.target.value)}
-                placeholder="Search fields..."
+                placeholder={dictionary.home.searchFields}
                 className="w-full pl-8 pr-3 py-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-[#ff6be4]"
               />
             </div>
@@ -1448,7 +1460,7 @@ export default function App() {
                       <span
                         onPointerDown={(e) => handleFieldPointerDown(e, field)}
                         onClick={(e) => e.stopPropagation()}
-                        title="Drag to reorder field"
+                        title={dictionary.jsonFields.dragToReorder}
                         style={{ touchAction: 'none' }}
                         className="text-slate-400 font-mono cursor-grab active:cursor-grabbing select-none"
                       >
@@ -1491,7 +1503,7 @@ export default function App() {
                               e.stopPropagation();
                               saveFieldRename();
                             }}
-                            title="Save field name"
+                            title={dictionary.jsonFields.saveFieldName}
                             className="p-1 rounded hover:bg-pink-100 dark:hover:bg-pink-900/40 text-[#ff6be4]"
                           >
                             <Check className="w-3.5 h-3.5" />
@@ -1502,7 +1514,7 @@ export default function App() {
                               e.stopPropagation();
                               cancelFieldRename();
                             }}
-                            title="Cancel rename"
+                            title={dictionary.jsonFields.cancelRename}
                             className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400"
                           >
                             <X className="w-3.5 h-3.5" />
@@ -1517,7 +1529,7 @@ export default function App() {
                               startFieldRename(field);
                             }}
                             onPointerDown={(e) => e.stopPropagation()}
-                            title="Rename field"
+                            title={dictionary.jsonFields.renameField}
                             className="p-1 rounded opacity-60 hover:opacity-100 hover:bg-pink-100 dark:hover:bg-pink-900/40 text-slate-400 hover:text-[#ff6be4]"
                           >
                             <Pencil className="w-3.5 h-3.5" />
@@ -1603,7 +1615,7 @@ export default function App() {
               <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50">
                 <div className="flex items-center space-x-2">
                   <FileCode className="w-4 h-4 text-[#ff6be4]" />
-                  <span className="font-semibold text-sm text-slate-800 dark:text-slate-200">Input Data</span>
+                  <span className="font-semibold text-sm text-slate-800 dark:text-slate-200">{dictionary.home.inputData}</span>
                 </div>
                 <div className="flex items-center bg-slate-200 dark:bg-slate-800 p-0.5 rounded-xl">
                   <button
@@ -1621,8 +1633,8 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setExpandedPreview((value) => value === 'input' ? null : 'input')}
-                    title={expandedPreview === 'input' ? 'Restore preview' : 'Expand preview'}
-                    aria-label={expandedPreview === 'input' ? 'Restore preview' : 'Expand preview'}
+                    title={expandedPreview === 'input' ? dictionary.home.restorePreview : dictionary.home.expandPreview}
+                    aria-label={expandedPreview === 'input' ? dictionary.home.restorePreview : dictionary.home.expandPreview}
                     className="p-1.5 rounded-lg text-slate-500 hover:text-[#ff6be4] hover:bg-white/70 dark:hover:bg-slate-700 transition-colors"
                   >
                     {expandedPreview === 'input'
@@ -1680,6 +1692,7 @@ export default function App() {
               </div>
 
               <BatchInputPanel
+                labels={{ ...dictionary.batch, download: dictionary.common.download }}
                 open={inputBatchOpen}
                 onToggle={() => setInputBatchOpen((value) => !value)}
                 tasks={batch.tasks}
@@ -1702,7 +1715,7 @@ export default function App() {
                     language={streamingSourceFile ? 'json' : activeInputFormat}
                     editable
                     onChange={handleInputDataChange}
-                    placeholder="Paste or type your source data here..."
+                    placeholder={dictionary.home.pasteSource}
                   />
                 ) : (
                   renderDataTable(
@@ -1718,7 +1731,7 @@ export default function App() {
               <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50">
                 <div className="flex items-center space-x-2">
                   <FileText className="w-4 h-4 text-[#ff6be4]" />
-                  <span className="font-semibold text-sm text-slate-800 dark:text-slate-200">Converted Output</span>
+                  <span className="font-semibold text-sm text-slate-800 dark:text-slate-200">{dictionary.home.outputData}</span>
                 </div>
                 <div className="flex items-center bg-slate-200 dark:bg-slate-800 p-0.5 rounded-xl">
                   <button
@@ -1737,8 +1750,8 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setExpandedPreview((value) => value === 'output' ? null : 'output')}
-                    title={expandedPreview === 'output' ? 'Restore preview' : 'Expand preview'}
-                    aria-label={expandedPreview === 'output' ? 'Restore preview' : 'Expand preview'}
+                    title={expandedPreview === 'output' ? dictionary.home.restorePreview : dictionary.home.expandPreview}
+                    aria-label={expandedPreview === 'output' ? dictionary.home.restorePreview : dictionary.home.expandPreview}
                     className="p-1.5 rounded-lg text-slate-500 hover:text-[#ff6be4] hover:bg-white/70 dark:hover:bg-slate-700 transition-colors"
                   >
                     {expandedPreview === 'output'
@@ -1749,6 +1762,7 @@ export default function App() {
               </div>
 
               <BatchOutputPanel
+                labels={{ ...dictionary.batch, download: dictionary.common.download }}
                 open={outputBatchOpen}
                 onToggle={() => setOutputBatchOpen((value) => !value)}
                 tasks={batch.tasks}
@@ -1780,7 +1794,7 @@ export default function App() {
                     </div>
                     {streamingPreviewTruncated && (
                       <div
-                        title="The preview is limited to 5 MB. Convert and download the file to view the complete output."
+                        title={dictionary.home.previewLimit}
                         className="rounded-lg border border-amber-300/70 bg-amber-50 dark:border-amber-700/60 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
                       >
                         The preview is limited to 5 MB. Convert and download the file to view the complete output.
@@ -1823,7 +1837,7 @@ export default function App() {
                         type="text"
                         value={batchSqlTableName}
                         onChange={(event) => setBatchSqlTableName(event.target.value)}
-                        placeholder="Table name"
+                        placeholder={dictionary.home.tableName}
                         className="h-10 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-xs text-slate-800 dark:text-slate-200 outline-none focus:border-pink-400"
                       />
                     </label>
@@ -1850,7 +1864,7 @@ export default function App() {
                             </label>
                           ))}
                           {availableFields.length === 0 && (
-                            <p className="px-2 py-2 text-xs text-slate-400">No fields</p>
+                            <p className="px-2 py-2 text-xs text-slate-400">{dictionary.home.noFields}</p>
                           )}
                         </div>
                       </details>
@@ -1862,7 +1876,7 @@ export default function App() {
                       disabled={!batch.activeTask}
                       className="inline-flex h-10 items-center justify-center rounded-lg bg-gradient-to-r from-[#ff6be4] to-rose-500 px-4 text-xs font-semibold text-white shadow-sm transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {batchSqlFormatted ? 'Standard SQL' : 'Format SQL'}
+                      {batchSqlFormatted ? dictionary.home.standardSql : dictionary.home.sqlFormat}
                     </button>
                     )}
                   </div>
@@ -1897,7 +1911,7 @@ export default function App() {
                         type="text"
                         value={sqlTableName}
                         onChange={(event) => setSqlTableName(event.target.value)}
-                        placeholder="Table name"
+                        placeholder={dictionary.home.tableName}
                         className="h-10 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-xs text-slate-800 dark:text-slate-200 outline-none focus:border-pink-400"
                       />
                     </label>
@@ -1924,7 +1938,7 @@ export default function App() {
                             </label>
                           ))}
                           {availableFields.length === 0 && (
-                            <p className="px-2 py-2 text-xs text-slate-400">No fields</p>
+                            <p className="px-2 py-2 text-xs text-slate-400">{dictionary.home.noFields}</p>
                           )}
                         </div>
                       </details>
@@ -1943,7 +1957,7 @@ export default function App() {
                       disabled={convertedRows.length === 0}
                       className="inline-flex h-10 items-center justify-center rounded-lg bg-gradient-to-r from-[#ff6be4] to-rose-500 px-4 text-xs font-semibold text-white shadow-sm transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      Format SQL
+                      {dictionary.home.sqlFormat}
                     </button>
                     )}
                   </div>
@@ -1994,14 +2008,14 @@ export default function App() {
                     language={previewMode === 'batch'
                       ? batch.activeTask?.outputFormat ?? outputFormat
                       : outputFormat}
-                    placeholder="Converted output will appear here in real-time..."
+                    placeholder={dictionary.home.outputPlaceholder}
                   />
                 ) : (
                   renderDataTable(
                     convertedRows,
                     outputData.startsWith('Conversion error:')
                       ? outputData
-                      : 'No converted records available yet.'
+                      : dictionary.home.noOutputRecords
                   )
                 )}
               </div>
@@ -2046,14 +2060,14 @@ export default function App() {
       {/* Footer */}
       <footer className="shrink-0 border-t border-slate-200 dark:border-slate-800/80 bg-white/50 dark:bg-slate-950/50 py-4 px-6 mt-auto">
         <div className="max-w-[1700px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
-          <div>NPC-DateConverter &copy; 2026. All rights reserved.</div>
+          <div>{dictionary.home.footerRights}</div>
           <div className="flex items-center space-x-6">
             <button
               onClick={() => setActiveModal('privacy')}
               className="hover:text-[#ff6be4] transition-colors flex items-center gap-1.5"
             >
               <ShieldCheck className="w-3.5 h-3.5 text-[#ff6be4]" />
-              <span>Privacy Policy</span>
+              <span>{dictionary.common.privacy}</span>
             </button>
             <span>•</span>
             <button
@@ -2061,7 +2075,7 @@ export default function App() {
               className="hover:text-[#ff6be4] transition-colors flex items-center gap-1.5"
             >
               <Lock className="w-3.5 h-3.5 text-[#ff6be4]" />
-              <span>Terms of Service</span>
+              <span>{dictionary.common.terms}</span>
             </button>
             <span>•</span>
             <a
@@ -2071,7 +2085,7 @@ export default function App() {
               className="hover:text-[#ff6be4] transition-colors flex items-center space-x-1.5"
             >
               <svg className="w-3.5 h-3.5 text-[#ff6be4]" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
-              <span>Developer Source</span>
+              <span>{dictionary.home.developerSource}</span>
             </a>
           </div>
         </div>
@@ -2095,164 +2109,59 @@ export default function App() {
             </button>
             <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain pr-2 space-y-5 modal-scroll-area [scrollbar-gutter:stable]">
 
-            {activeModal === 'privacy' ? (
-              <div className="space-y-4 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-lg">
-                  <ShieldCheck className="w-5 h-5 text-[#ff6be4]" />
-                  <h2>Privacy Policy</h2>
+            {activeModal && (() => {
+              const documents = getLegalDocuments(locale);
+              const document = activeModal === 'privacy'
+                ? documents.privacy
+                : documents.terms;
+
+              return (
+                <div className="space-y-4 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-lg">
+                    {activeModal === 'privacy' ? (
+                      <ShieldCheck className="w-5 h-5 text-[#ff6be4]" />
+                    ) : (
+                      <Lock className="w-5 h-5 text-[#ff6be4]" />
+                    )}
+                    <h2>
+                      {activeModal === 'privacy'
+                        ? dictionary.legal.privacyTitle
+                        : dictionary.legal.termsTitle}
+                    </h2>
+                  </div>
+                  <p>{document.effectiveDate}</p>
+                  <p>{document.introduction}</p>
+                  {document.sections.map((section) => (
+                    <section key={section.title} className="space-y-1">
+                      <h3 className="font-bold text-slate-900 dark:text-white">
+                        {section.title}
+                      </h3>
+                      {section.paragraphs.map((paragraph, index) => (
+                        <p key={`${section.title}-${index}`}>{paragraph}</p>
+                      ))}
+                    </section>
+                  ))}
+                  <p>
+                    {document.footerPrefix}{' '}
+                    <a
+                      href="https://github.com/newddf/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[#ff6be4] underline"
+                    >
+                      {document.linkLabel}
+                    </a>{' '}
+                    {document.footerSuffix}
+                  </p>
                 </div>
-                <p>Effective Date: November 1, 2026</p>
-                <p>
-                  This Privacy Policy explains how this data conversion service handles information when you visit or use the website. We aim to minimize the collection of personal information and to process conversion data in your browser whenever the selected feature supports local processing.
-                </p>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">1. Data Processing</h3>
-                  <p>
-                    Text and files selected for conversion are processed by the application in your browser. The application is designed not to send the contents of your data files to us as part of the normal conversion workflow. Processing behavior may depend on your browser, enabled features, and the version of the application you are using.
-                  </p>
-                  <p>
-                    You are responsible for checking the contents of your files and avoiding the use of sensitive or confidential information unless you have determined that the service is appropriate for that information.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">2. Website and Technical Information</h3>
-                  <p>
-                    The website hosting provider or infrastructure may automatically process limited technical information when you access the site. This may include IP address, browser and device information, requested pages, timestamps, and security or diagnostic logs. Such information is generally used to deliver, maintain, and protect the website.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">3. Cookies and Local Storage</h3>
-                  <p>
-                    The application may use browser storage or similar technologies for essential interface preferences or functionality. We do not claim that the hosting platform or future integrations never use cookies or other technical storage. You can manage browser storage and cookie settings through your browser.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">4. Third-Party Services</h3>
-                  <p>
-                    The website may rely on third-party hosting, libraries, or external links. Those providers operate under their own privacy policies and terms. When you follow an external link, your interaction is governed by the destination website&apos;s policies. We do not control third-party data practices.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">5. Data Retention and Security</h3>
-                  <p>
-                    The application does not provide an account-based file storage service. Files processed in the browser remain subject to your browser session and device behavior. Technical logs held by hosting providers may be retained according to their own policies.
-                  </p>
-                  <p>
-                    No website or data transmission method can be guaranteed completely secure. Keep your own copies of important files and use appropriate device security practices.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">6. Children&apos;s Privacy</h3>
-                  <p>
-                    This service is not specifically directed at children. We do not knowingly request personal information from children through the conversion interface.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">7. Policy Updates</h3>
-                  <p>
-                    This policy may be updated as the application, infrastructure, or applicable requirements change. The latest version will be published on this page with an updated effective date.
-                  </p>
-                </section>
-
-                <p>
-                  For project information, visit the <a href="https://github.com/newddf/" target="_blank" rel="noopener noreferrer" className="text-[#ff6be4] underline">project maintainer&apos;s GitHub profile</a>.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-4 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-lg">
-                  <Lock className="w-5 h-5 text-[#ff6be4]" />
-                  <h2>Terms of Service</h2>
-                </div>
-                <p>Effective Date: November 1, 2026</p>
-                <p>
-                  By accessing or using this data conversion service, you agree to these Terms of Service. If you do not agree, please discontinue use of the service.
-                </p>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">1. Service Description</h3>
-                  <p>
-                    This project provides browser-based tools for parsing, previewing, and converting supported data formats. Features, supported formats, and behavior may change as the project develops.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">2. Acceptable Use</h3>
-                  <p>
-                    You agree to use the service lawfully and responsibly. You must not use it to violate applicable laws, infringe the rights of others, interfere with the website, attempt unauthorized access, or distribute malicious content.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">3. Your Data and Responsibilities</h3>
-                  <p>
-                    You retain responsibility for the data and files you submit to the application. You must have the necessary rights and permissions to use that content. Always review conversion results for completeness, formatting, and accuracy before relying on them.
-                  </p>
-                  <p>
-                    You are responsible for maintaining independent backups of important source files and converted results. Do not treat this service as your sole data storage or backup solution.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">4. No Professional Advice</h3>
-                  <p>
-                    Conversion results are provided as a technical convenience and are not professional, legal, financial, or other specialized advice. You should independently verify results before using them in business-critical, regulated, or other high-impact workflows.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">5. Intellectual Property</h3>
-                  <p>
-                    The website&apos;s original design, code, and branding are protected by applicable intellectual property laws. Third-party libraries and components remain subject to their respective licenses. These terms do not transfer ownership of your input data to the project maintainer.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">6. Availability and Changes</h3>
-                  <p>
-                    The service is provided free of charge and may be modified, suspended, or discontinued at any time. We do not guarantee uninterrupted availability, compatibility with every file, or continued support for any particular feature.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">7. Disclaimer of Warranties</h3>
-                  <p>
-                    To the extent permitted by applicable law, the service is provided &quot;as is&quot; and &quot;as available&quot;, without warranties of any kind, whether express or implied. We do not warrant that the service will be error-free, secure, or suitable for every purpose.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">8. Limitation of Liability</h3>
-                  <p>
-                    To the extent permitted by applicable law, the project maintainer shall not be liable for indirect, incidental, special, consequential, or punitive damages, or for loss of data, profits, or business arising from or related to the use or inability to use the service.
-                  </p>
-                </section>
-
-                <section className="space-y-1">
-                  <h3 className="font-bold text-slate-900 dark:text-white">9. Changes to These Terms</h3>
-                  <p>
-                    These terms may be revised as the service evolves. Continued use of the service after updated terms are published constitutes acceptance of the revised terms to the extent permitted by applicable law.
-                  </p>
-                </section>
-
-                <p>
-                  This project is maintained independently. Visit <a href="https://github.com/newddf/" target="_blank" rel="noopener noreferrer" className="text-[#ff6be4] underline">GitHub.com/newddf</a> for project information.
-                </p>
-              </div>
-            )}
+              );
+            })()}
 
             <button
               onClick={() => setActiveModal(null)}
               className="w-full py-2.5 bg-gradient-to-r from-[#ff6be4] to-rose-500 hover:opacity-90 text-white rounded-xl text-xs font-semibold shadow-md shadow-pink-500/25"
             >
-              Acknowledge & Close
+              {dictionary.legal.acknowledgeClose}
             </button>
             </div>
           </div>

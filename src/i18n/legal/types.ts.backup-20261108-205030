@@ -1,0 +1,17 @@
+export interface LegalSection {
+  title: string;
+  paragraphs: string[];
+}
+
+export interface LegalDocument {
+  effectiveDate: string;
+  introduction: string;
+  sections: LegalSection[];
+  footer: string;
+  linkLabel: string;
+}
+
+export interface LegalDocuments {
+  privacy: LegalDocument;
+  terms: LegalDocument;
+}

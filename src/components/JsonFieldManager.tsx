@@ -10,6 +10,7 @@ import {
   FolderOpen,
   ListTree,
 } from 'lucide-react';
+import type { Dictionary } from '@/i18n/types';
 import type {
   JsonFieldNode,
   JsonFieldSelection,
@@ -22,6 +23,10 @@ import {
 } from '@/lib/json-fields';
 
 interface Props {
+  labels: Dictionary["jsonFields"] & {
+    fieldNameEmpty: string;
+    duplicateFieldName: string;
+  };
   nodes: JsonFieldNode[];
   selection: JsonFieldSelection;
   onSelectionChange: (value: JsonFieldSelection) => void;
@@ -31,6 +36,7 @@ interface Props {
 }
 
 export default function JsonFieldManager({
+  labels,
   nodes,
   selection,
   onSelectionChange,
@@ -61,7 +67,7 @@ export default function JsonFieldManager({
     return find(nodes)?.children ?? [];
   }, [nodes, focusPath]);
 
-  const currentLabel = focusPath.split('.').pop()?.replace('[]', '') || 'root';
+  const currentLabel = focusPath.split('.').pop()?.replace('[]', '') || labels.root;
   const visibleNodes = currentNodes.filter((node) => {
     const displayName = fieldRenames[node.path] ?? node.key;
     const query = search.toLowerCase();
@@ -157,7 +163,7 @@ export default function JsonFieldManager({
             style={{ marginLeft: `${depth * 14}px` }}
           >
             <span
-              title="Drag to reorder"
+              title={labels.dragToReorder}
               onPointerDown={(event) => handleNodePointerDown(event, node.path)}
               className="cursor-grab select-none touch-none font-mono text-slate-400 active:cursor-grabbing"
             >
@@ -169,7 +175,7 @@ export default function JsonFieldManager({
                 type="button"
                 onClick={() => toggleExpanded(node.path)}
                 className="p-0.5 text-slate-400"
-                aria-label={isExpanded ? 'Collapse field' : 'Expand field'}
+                aria-label={isExpanded ? labels.collapseField : labels.expandField}
               >
                 {isExpanded
                   ? <ChevronDown className="h-3.5 w-3.5" />
@@ -211,7 +217,7 @@ export default function JsonFieldManager({
                       event.preventDefault();
                       const nextName = editingName.trim();
                       if (!nextName) {
-                        setRenameError('Field name cannot be empty.');
+                        setRenameError(labels.fieldNameEmpty);
                         return;
                       }
                       const duplicate = items.some((other) =>
@@ -219,7 +225,7 @@ export default function JsonFieldManager({
                         (fieldRenames[other.path] ?? other.key).toLowerCase() === nextName.toLowerCase()
                       );
                       if (duplicate) {
-                        setRenameError('A field with this name already exists at this level.');
+                        setRenameError(labels.duplicateFieldName);
                         return;
                       }
                       onFieldRename(node.path, nextName);
@@ -232,14 +238,14 @@ export default function JsonFieldManager({
                     }
                   }}
                   className="w-28 min-w-0 rounded border border-[#ff6be4] bg-white px-1.5 py-1 text-[10px] font-mono text-slate-800 outline-none dark:bg-slate-900 dark:text-slate-100"
-                  aria-label="New field name"
+                  aria-label={labels.newFieldName}
                 />
                 <button
                   type="button"
                   onClick={() => {
                     const nextName = editingName.trim();
                     if (!nextName) {
-                      setRenameError('Field name cannot be empty.');
+                      setRenameError(labels.fieldNameEmpty);
                       return;
                     }
                     const duplicate = items.some((other) =>
@@ -247,7 +253,7 @@ export default function JsonFieldManager({
                       (fieldRenames[other.path] ?? other.key).toLowerCase() === nextName.toLowerCase()
                     );
                     if (duplicate) {
-                      setRenameError('A field with this name already exists at this level.');
+                      setRenameError(labels.duplicateFieldName);
                       return;
                     }
                     onFieldRename(node.path, nextName);
@@ -255,7 +261,7 @@ export default function JsonFieldManager({
                     setRenameError('');
                   }}
                   className="rounded p-1 text-[#ff6be4]"
-                  title="Save field name"
+                  title={labels.saveFieldName}
                 >
                   <Check className="h-3.5 w-3.5" />
                 </button>
@@ -266,7 +272,7 @@ export default function JsonFieldManager({
                     setRenameError('');
                   }}
                   className="rounded p-1 text-slate-400"
-                  title="Cancel rename"
+                  title={labels.cancelRename}
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -280,8 +286,8 @@ export default function JsonFieldManager({
                   setRenameError('');
                 }}
                 className="rounded p-1 text-slate-400 hover:text-[#ff6be4]"
-                title="Rename field"
-                aria-label="Rename field"
+                title={labels.renameField}
+                aria-label={labels.renameField}
               >
                 <Pencil className="h-3 w-3" />
               </button>
@@ -291,7 +297,7 @@ export default function JsonFieldManager({
               <button
                 type="button"
                 onClick={() => setFocusPath(node.path)}
-                title="Focus this level"
+                title={labels.focusLevel}
                 className="rounded p-1 text-slate-400 hover:text-[#ff6be4]"
               >
                 <FolderOpen className="h-3.5 w-3.5" />
@@ -317,7 +323,7 @@ export default function JsonFieldManager({
       <div className="flex items-center gap-2 border-b border-slate-100 pb-2 dark:border-slate-800">
         <ListTree className="h-4 w-4 text-[#ff6be4]" />
         <span className="text-xs font-bold uppercase tracking-wide text-slate-800 dark:text-slate-200">
-          Fields (Drag to Reorder)
+          {labels.title} ({labels.dragToReorder})
         </span>
         <span className="ml-auto rounded-full bg-pink-500/10 px-2 py-0.5 text-[10px] font-medium text-[#ff6be4]">
           {Object.values(selection).filter(Boolean).length}/{Object.keys(selection).length}
@@ -330,7 +336,7 @@ export default function JsonFieldManager({
           onClick={() => setFocusPath('')}
           className={!focusPath ? 'font-semibold text-[#ff6be4]' : 'text-slate-500'}
         >
-          root
+          {labels.root}
         </button>
         {focusPath && (
           <>
@@ -345,7 +351,7 @@ export default function JsonFieldManager({
               }}
               className="ml-auto rounded-lg border border-slate-200 px-2 py-1 text-slate-500 dark:border-slate-700"
             >
-              Back
+              {labels.back}
             </button>
           </>
         )}
@@ -355,7 +361,7 @@ export default function JsonFieldManager({
         <input
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search fields..."
+          placeholder={labels.searchFields}
           className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs outline-none focus:border-[#ff6be4] dark:border-slate-700 dark:bg-slate-800"
         />
       </div>
@@ -368,7 +374,7 @@ export default function JsonFieldManager({
           )}
           className="flex-1 rounded-lg border border-slate-200 bg-slate-100 py-1 text-[10px] font-medium text-slate-700 hover:bg-pink-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
         >
-          Select All
+          {labels.selectAll}
         </button>
         <button
           type="button"
@@ -377,7 +383,7 @@ export default function JsonFieldManager({
           )}
           className="flex-1 rounded-lg border border-slate-200 bg-slate-100 py-1 text-[10px] font-medium text-slate-700 hover:bg-rose-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
         >
-          Deselect All
+          {labels.deselectAll}
         </button>
       </div>
 
@@ -390,7 +396,7 @@ export default function JsonFieldManager({
         {renderTree(visibleNodes)}
         {visibleNodes.length === 0 && (
           <p className="py-6 text-center text-xs text-slate-400">
-            No fields found.
+            {labels.noFieldsFound}
           </p>
         )}
         {dragPath && dragPosition && (

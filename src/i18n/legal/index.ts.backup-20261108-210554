@@ -1,0 +1,22 @@
+import { defaultLocale, isLocale, type Locale } from "../config";
+import type { LegalDocuments } from "./types";
+import en from "./en";
+import zhCn from "./zh-cn";
+import es from "./es";
+import de from "./de";
+import fr from "./fr";
+
+const legalDocuments: Partial<Record<Locale, LegalDocuments>> = {
+  en,
+  "zh-cn": zhCn,
+  es,
+  de,
+  fr,
+};
+
+export function getLegalDocuments(locale: string): LegalDocuments {
+  const resolvedLocale = isLocale(locale) ? locale : defaultLocale;
+  return legalDocuments[resolvedLocale] ?? en;
+}
+
+export type { LegalDocuments, LegalDocument, LegalSection } from "./types";

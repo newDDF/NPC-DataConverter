@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent } from 'react';
 import type { StreamingFormat } from '@/lib/streaming/types';
+import type { Locale } from '@/i18n/config';
+import { getDictionary } from '@/i18n';
+import LanguageSwitcher from '@/components/LanguageSwitcher';
 
 type Status =
   | 'idle'
@@ -63,7 +66,8 @@ function hasExpectedExtension(file: File, format: StreamingFormat) {
   return file.name.toLowerCase().endsWith(`.${FORMAT_EXTENSIONS[format]}`);
 }
 
-export default function StreamingWorkspace() {
+export default function StreamingWorkspace({ locale = 'en' }: { locale?: Locale }) {
+  const t = getDictionary(locale).streaming;
   const inputRef = useRef<HTMLInputElement>(null);
   const workerRef = useRef<Worker | null>(null);
   const activeRef = useRef(false);
@@ -281,7 +285,7 @@ export default function StreamingWorkspace() {
       setError(
         startError instanceof Error
           ? startError.message
-          : 'Unable to start the conversion.',
+          : t.startError,
       );
       setStatus('error');
     }
@@ -319,7 +323,7 @@ export default function StreamingWorkspace() {
       setError(
         downloadError instanceof Error
           ? downloadError.message
-          : 'Unable to download the converted file.',
+          : t.downloadError,
       );
       setStatus('error');
     }
@@ -333,20 +337,23 @@ export default function StreamingWorkspace() {
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-12 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <div className="mx-auto max-w-3xl space-y-8">
+        <div className="flex justify-end">
+          <LanguageSwitcher />
+        </div>
         <header className="space-y-2">
           <p className="text-sm font-semibold uppercase tracking-wider text-pink-500">
-            Streaming Converter
+            {t.title}
           </p>
-          <h1 className="text-3xl font-bold">Streaming File Converter</h1>
+          <h1 className="text-3xl font-bold">{t.pageTitle}</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            Incremental parsing and local file output.
+            {t.subtitle}
           </p>
         </header>
 
         <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="space-y-2 text-sm font-medium">
-              <span>Input format</span>
+              <span>{t.inputFormat}</span>
               <select
                 value={inputFormat}
                 onChange={(event) => changeInputFormat(event.target.value)}
@@ -362,7 +369,7 @@ export default function StreamingWorkspace() {
             </label>
 
             <label className="space-y-2 text-sm font-medium">
-              <span>Output format</span>
+              <span>{t.outputFormat}</span>
               <select
                 value={outputFormat}
                 onChange={(event) => setOutputFormat(event.target.value as StreamingFormat)}
@@ -381,7 +388,7 @@ export default function StreamingWorkspace() {
           {outputFormat === 'sql' && (
             <div className="grid gap-4 rounded-xl border border-pink-200 bg-pink-50/50 p-4 dark:border-pink-900 dark:bg-pink-950/20 sm:grid-cols-2">
               <label className="space-y-2 text-sm font-medium">
-                <span>SQL mode</span>
+                <span>{t.sqlMode}</span>
                 <select value={sqlMode} onChange={(event) => setSqlMode(event.target.value as typeof sqlMode)} disabled={isBusy} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800">
                   <option value="insert">INSERT</option>
                   <option value="create">CREATE TABLE</option>
@@ -389,14 +396,14 @@ export default function StreamingWorkspace() {
                 </select>
               </label>
               <label className="space-y-2 text-sm font-medium">
-                <span>Table name</span>
+                <span>{t.tableName}</span>
                 <input value={sqlTableName} onChange={(event) => setSqlTableName(event.target.value)} disabled={isBusy} placeholder="data" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800" />
               </label>
               {sqlMode !== 'insert' && (
                 <label className="space-y-2 text-sm font-medium sm:col-span-2">
-                  <span>{sqlMode === 'create' ? 'Primary key columns (optional)' : 'Key columns (required)'}</span>
+                  <span>{sqlMode === 'create' ? t.primaryKeyColumns : t.keyColumnsRequired}</span>
                   <input value={sqlKeyColumns} onChange={(event) => setSqlKeyColumns(event.target.value)} disabled={isBusy} placeholder="id, code" className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800" />
-                  <span className="text-xs font-normal text-slate-500">Separate column names with commas.</span>
+                  <span className="text-xs font-normal text-slate-500">{t.separateColumnNames}</span>
                 </label>
               )}
             </div>
@@ -405,7 +412,7 @@ export default function StreamingWorkspace() {
           <div
             role="button"
             tabIndex={0}
-            aria-label={`Select or drop a ${inputFormat.toUpperCase()} file`}
+            aria-label={`${t.selectFile}: ${inputFormat.toUpperCase()}`}
             onClick={() => inputRef.current?.click()}
             onKeyDown={(event) => {
               if (event.key === 'Enter' || event.key === ' ') {
@@ -430,10 +437,10 @@ export default function StreamingWorkspace() {
             }`}
           >
             <p className="text-lg font-medium">
-              Drop a {inputFormat.toUpperCase()} file here or browse
+              {t.dropFilePrompt.replace('{format}', inputFormat.toUpperCase())}
             </p>
             <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-              Select a file to begin
+              {t.selectFileHint}
             </p>
 
             {file && (
@@ -444,7 +451,7 @@ export default function StreamingWorkspace() {
 
             {isBusy && (
               <p className="mt-2 text-xs text-slate-500">
-                Selecting another file will cancel the current conversion first.
+                {t.selectingAnotherCancels}
               </p>
             )}
           </div>
@@ -464,7 +471,7 @@ export default function StreamingWorkspace() {
               disabled={!file || isBusy}
               className="rounded-lg bg-pink-500 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-pink-600 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              Start Conversion
+              {t.startConversion}
             </button>
 
             {isBusy && (
@@ -474,7 +481,7 @@ export default function StreamingWorkspace() {
                 disabled={status === 'cancelling'}
                 className="rounded-lg border border-slate-300 px-5 py-2.5 text-sm font-medium transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:hover:bg-slate-800"
               >
-                {status === 'cancelling' ? 'Cancelling...' : 'Cancel'}
+                {status === 'cancelling' ? t.cancelling : t.cancel}
               </button>
             )}
           </div>
@@ -483,10 +490,10 @@ export default function StreamingWorkspace() {
             <div className="space-y-2">
               <p className="text-sm text-slate-500 dark:text-slate-400">
                 {status === 'cancelling'
-                  ? 'Waiting for the worker to finish cleanup...'
+                  ? t.waitingCleanup
                   : status === 'starting'
-                    ? 'Preparing conversion...'
-                    : `Processing ${inputFormat.toUpperCase()} in chunks...`}
+                    ? t.preparing
+                    : t.processingInChunks.replace('{format}', inputFormat.toUpperCase())}
               </p>
 
               {status !== 'cancelling' && (
@@ -499,30 +506,30 @@ export default function StreamingWorkspace() {
 
           {(status === 'processing' || status === 'completed') && (
             <div className="space-y-1 rounded-lg bg-slate-50 p-4 text-sm dark:bg-slate-800">
-              <p>Parsed rows: {rows.toLocaleString()}</p>
-              <p>Chunks processed: {chunks.toLocaleString()}</p>
-              <p>Parse errors: {parseErrors.toLocaleString()}</p>
+              <p>{t.parsedRows}: {rows.toLocaleString()}</p>
+              <p>{t.chunksProcessed}: {chunks.toLocaleString()}</p>
+              <p>{t.parseErrors}: {parseErrors.toLocaleString()}</p>
             </div>
           )}
 
           {status === 'completed' && (
             <div className="space-y-3">
               <p className="text-sm text-emerald-600">
-                {outputFormat.toUpperCase()} file created successfully.
+                {t.fileCreated.replace('{format}', outputFormat.toUpperCase())}
               </p>
               <button
                 type="button"
                 onClick={downloadOutput}
                 className="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
               >
-                Download {outputFormat.toUpperCase()}
+                {t.download} {outputFormat.toUpperCase()}
               </button>
             </div>
           )}
 
           {status === 'cancelled' && (
             <p className="text-sm text-amber-600">
-              Conversion cancelled. Temporary output has been cleaned up.
+              {t.cancelledCleanup}
             </p>
           )}
 
