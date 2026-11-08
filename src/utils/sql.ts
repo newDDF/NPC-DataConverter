@@ -281,6 +281,13 @@ const quoteTableName = (tableName: string): string => {
 const quoteValue = (value: unknown): string => {
   if (value === null || value === undefined) return 'NULL';
 
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) {
+      throw new Error('Cannot serialize an invalid date to SQL.');
+    }
+    return quoteValue(value.toISOString());
+  }
+
   if (typeof value === 'boolean') {
     return value ? '1' : '0';
   }
@@ -437,8 +444,16 @@ const inferSQLColumnType = (values: unknown[]): string => {
 
   if (present.length === 0) return 'TEXT';
 
+  if (present.every((value) => value instanceof Date)) {
+    if (present.some((value) => !Number.isFinite((value as Date).getTime()))) {
+      throw new Error('Cannot infer a SQL type from invalid dates.');
+    }
+    return 'DATETIME';
+  }
+
   if (present.some((value) =>
-    typeof value === 'object' || typeof value === 'function'
+    (typeof value === 'object' && !(value instanceof Date)) ||
+    typeof value === 'function'
   )) {
     throw new Error('Nested objects and arrays must be flattened before SQL export.');
   }

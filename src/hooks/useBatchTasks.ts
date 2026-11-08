@@ -10,6 +10,7 @@ import {
   readBatchSource,
 } from '@/lib/batch/convert';
 import { serializeSQLCreate, serializeSQLCreateTable, serializeSQLUpdate } from '@/utils/sql';
+import { flattenObject } from '@/utils/parsers';
 
 const createTaskId = () =>
   `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -130,7 +131,11 @@ export function useBatchTasks() {
     sqlMode: SQLMode = 'insert',
     keyColumns: string[] = []
   ) => {
-    if (!task.sourceFormat || task.status === 'processing' || task.status === 'completed') {
+    if (
+      !task.sourceFormat ||
+      task.status === 'processing' ||
+      (task.status === 'completed' && format !== 'sql')
+    ) {
       return;
     }
 
@@ -148,8 +153,9 @@ export function useBatchTasks() {
       let outputBlob: Blob | null = null;
 
       if (format === 'sql') {
+        const sqlRows = source.rows.map((row) => flattenObject(row));
         const availableColumns = Array.from(
-          new Set(source.rows.flatMap((row) => Object.keys(row)))
+          new Set(sqlRows.flatMap((row) => Object.keys(row)))
         );
         const sqlColumns = columns?.length
           ? columns.filter((column) => availableColumns.includes(column))
@@ -163,7 +169,7 @@ export function useBatchTasks() {
           ? Array.from(new Set([...sqlColumns, ...keyColumns]))
           : sqlColumns;
 
-        const orderedRows = source.rows.map((row) =>
+        const orderedRows = sqlRows.map((row) =>
           Object.fromEntries(
             inputColumns
               .filter((column) => Object.prototype.hasOwnProperty.call(row, column))
@@ -212,7 +218,11 @@ export function useBatchTasks() {
     const pending = tasks.filter(
       (task) =>
         task.sourceFormat !== null &&
-        (task.status === 'waiting' || task.status === 'failed')
+        (
+          task.status === 'waiting' ||
+          task.status === 'failed' ||
+          (format === 'sql' && task.status === 'completed')
+        )
     );
 
     if (pending.length === 0) return;
@@ -242,8 +252,9 @@ export function useBatchTasks() {
 
     try {
       const source = await readBatchSource(task.file, task.sourceFormat);
+      const sqlRows = source.rows.map((row) => flattenObject(row));
       const availableColumns = Array.from(
-        new Set(source.rows.flatMap((row) => Object.keys(row)))
+        new Set(sqlRows.flatMap((row) => Object.keys(row)))
       );
       const sqlColumns = columns.length
         ? columns.filter((column) => availableColumns.includes(column))
@@ -257,7 +268,7 @@ export function useBatchTasks() {
         ? Array.from(new Set([...sqlColumns, ...keyColumns]))
         : sqlColumns;
 
-      const orderedRows = source.rows.map((row) =>
+      const orderedRows = sqlRows.map((row) =>
         Object.fromEntries(
           inputColumns
             .filter((column) => Object.prototype.hasOwnProperty.call(row, column))

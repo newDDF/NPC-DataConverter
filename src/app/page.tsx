@@ -14,7 +14,7 @@ import {
   type JsonFieldSelection,
 } from '@/lib/json-fields';
 import { BatchInputPanel, BatchOutputPanel } from '@/components/batch/BatchPanels';
-import { detectFormat, parseTextData, parseExcelBuffer, serializeRows, createExcelBlob } from '@/utils/parsers';
+import { detectFormat, parseTextData, parseExcelBuffer, serializeRows, createExcelBlob, flattenObject } from '@/utils/parsers';
 import { serializeSQL, serializeSQLCreateTable, serializeSQLFormatted, serializeSQLUpdate } from '@/utils/sql';
 import { 
   ArrowRightLeft, 
@@ -308,6 +308,8 @@ export default function App() {
   const [batchSqlTableName, setBatchSqlTableName] = useState('data');
   const [batchSqlMode, setBatchSqlMode] = useState<SQLMode>('insert');
   const [batchSqlKeyFields, setBatchSqlKeyFields] = useState<string[]>([]);
+  const [batchSqlFormatted, setBatchSqlFormatted] = useState(false);
+  const batchSqlTaskIdRef = useRef<string | null>(null);
   const batchRowsCacheRef = useRef<{
     taskId: string;
     rowsPromise: Promise<Record<string, unknown>[]>;
@@ -392,16 +394,66 @@ export default function App() {
             ? task.outputFormat
             : outputFormat;
 
-        const result = convertBatchRows(
-          previewRows,
-          previewFormat,
-          undefined,
-          batchSqlTableName
-        );
-        const previewText =
-          task.status === 'completed' && task.outputFormat === 'sql'
-            ? task.outputText
-            : result.text;
+        let previewText: string;
+
+        if (previewFormat === 'sql') {
+          const requestedSqlFields = Array.from(new Set([
+            ...orderedSelectedFields,
+            ...(batchSqlMode === 'insert' ? [] : batchSqlKeyFields),
+          ]));
+
+          const sqlSourceFields = availableFields.filter((field) =>
+            requestedSqlFields.includes(field)
+          );
+
+          const sqlRows = rows.slice(0, 200).map((row) =>
+            flattenObject(
+              Object.fromEntries(
+                sqlSourceFields
+                  .filter((field) => Object.prototype.hasOwnProperty.call(row, field))
+                  .map((field) => [
+                    fieldRenames[field] ?? field,
+                    row[field],
+                  ])
+              )
+            )
+          );
+
+          const sqlColumns = Array.from(
+            new Set(sqlRows.flatMap((row) => Object.keys(row)))
+          );
+
+          const sqlKeyColumns = batchSqlKeyFields.map(
+            (field) => fieldRenames[field] ?? field
+          );
+
+          if (batchSqlMode === 'update') {
+            previewText = serializeSQLUpdate(
+              sqlRows,
+              sqlColumns,
+              sqlKeyColumns,
+              batchSqlTableName
+            );
+          } else if (batchSqlMode === 'create') {
+            previewText = serializeSQLCreateTable(
+              sqlRows,
+              sqlColumns,
+              batchSqlTableName,
+              sqlKeyColumns
+            );
+          } else {
+            previewText = batchSqlFormatted
+              ? serializeSQLFormatted(sqlRows, sqlColumns, batchSqlTableName)
+              : serializeSQL(sqlRows, sqlColumns, batchSqlTableName);
+          }
+        } else {
+          previewText = convertBatchRows(
+            previewRows,
+            previewFormat,
+            undefined,
+            batchSqlTableName
+          ).text;
+        }
 
         if (!cancelled) {
           setBatchPreview(previewText.slice(0, 100 * 1024));
@@ -432,6 +484,9 @@ export default function App() {
     availableFields,
     fieldRenames,
     batchSqlTableName,
+    batchSqlMode,
+    batchSqlKeyFields,
+    batchSqlFormatted,
     previewMode,
   ]);
 
@@ -587,12 +642,25 @@ export default function App() {
       const task = activeTask;
 
       if (!task || !task.sourceFormat) {
+        batchSqlTaskIdRef.current = null;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset batch SQL keys when no task is active.
+        setBatchSqlKeyFields([]);
         // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear field state when the selected batch task has no readable source.
         setAvailableFields([]);
         setSelectedFields([]);
         setJsonFieldTree([]);
         setJsonFieldSelection({});
         return;
+      }
+
+      if (batchSqlTaskIdRef.current !== task.id) {
+        batchSqlTaskIdRef.current = task.id;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset SQL selections when the active batch task changes.
+        setBatchSqlKeyFields([]);
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear fields from the previous batch task.
+        setAvailableFields([]);
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- Clear selections from the previous batch task.
+        setSelectedFields([]);
       }
 
       let cancelled = false;
@@ -1790,21 +1858,11 @@ export default function App() {
                     {batchSqlMode === 'insert' && (
                       <button
                       type="button"
-                      onClick={() => {
-                        if (batch.activeTask) {
-                          void batch.formatSQLTask(
-                            batch.activeTask.id,
-                            selectedFields,
-                            batchSqlTableName,
-                            batchSqlMode,
-                            batchSqlKeyFields
-                          );
-                        }
-                      }}
-                      disabled={!batch.activeTask || batch.activeTask.status !== 'completed'}
+                      onClick={() => setBatchSqlFormatted((value) => !value)}
+                      disabled={!batch.activeTask}
                       className="inline-flex h-10 items-center justify-center rounded-lg bg-gradient-to-r from-[#ff6be4] to-rose-500 px-4 text-xs font-semibold text-white shadow-sm transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      Format SQL
+                      {batchSqlFormatted ? 'Standard SQL' : 'Format SQL'}
                     </button>
                     )}
                   </div>

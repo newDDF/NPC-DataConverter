@@ -4,6 +4,7 @@ import {
   parseExcelBuffer,
   serializeRows,
   createExcelBlob,
+  flattenObject,
 } from '@/utils/parsers';
 
 const EXTENSION_FORMATS: Record<string, DataFormat> = {
@@ -48,11 +49,24 @@ export const convertBatchRows = (
   columns?: string[],
   tableName = 'data'
 ): { text: string; blob: Blob | null } => {
-  const orderedRows = columns === undefined
-    ? rows
-    : rows.map((row) =>
+  const sourceRows = format === 'sql'
+    ? rows.map((row) => flattenObject(row))
+    : rows;
+
+  const effectiveColumns = format === 'sql' && columns
+    ? Array.from(new Set(sourceRows.flatMap((row) => Object.keys(row))))
+        .filter((key) =>
+          columns.some((column) =>
+            key === column || key.startsWith(`${column}.`)
+          )
+        )
+    : columns;
+
+  const orderedRows = effectiveColumns === undefined
+    ? sourceRows
+    : sourceRows.map((row) =>
         Object.fromEntries(
-          columns
+          effectiveColumns
             .filter((key) => Object.prototype.hasOwnProperty.call(row, key))
             .map((key) => [key, row[key]])
         )
