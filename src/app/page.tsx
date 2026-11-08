@@ -442,6 +442,7 @@ export default function App() {
 
     if (task.sourceData !== undefined) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- Sync the selected batch task into the shared input editor.
+      setSqlKeyFields([]);
       setInputData(task.sourceData);
       const sourceFormat = task.sourceFormat === 'excel' ? 'json' : task.sourceFormat;
       if (sourceFormat) {
@@ -520,6 +521,7 @@ export default function App() {
         setStreamingSourceFile(file);
         setStreamingSourceFormat(streamingFormat);
         setStreamingInspection(inspection);
+        setSqlKeyFields([]);
         setInputData(JSON.stringify(inspection.previewRows, null, 2));
         setInputFormat(streamingFormat === 'excel' ? 'excel' : streamingFormat);
         setAvailableFields(inspection.fields);
@@ -536,6 +538,8 @@ export default function App() {
 
         if (requestId !== inspectionRequestRef.current) return;
 
+        setSqlKeyFields([]);
+
         setInputData(JSON.stringify(rows, null, 2));
         setInputFormat('json');
         return;
@@ -544,6 +548,8 @@ export default function App() {
       const text = await file.text();
 
       if (requestId !== inspectionRequestRef.current) return;
+
+      setSqlKeyFields([]);
 
       setInputData(text);
       setInputFormat(formats[extension]);
@@ -747,6 +753,8 @@ export default function App() {
       setStreamingProgress({ chunks: 0, rows: 0, parseErrors: 0 });
       setRecordCount(0);
     }
+
+    setSqlKeyFields([]);
 
     setInputData(value);
   }, [streamingSourceFile]);
@@ -1489,6 +1497,7 @@ export default function App() {
                   key={key}
                   onClick={() => {
                     setPreviewMode('single');
+                    setSqlKeyFields([]);
                     setInputData(SAMPLES[key].data);
                     setInputFormat(SAMPLES[key].format);
                   }}
@@ -1501,6 +1510,7 @@ export default function App() {
             <button
               onClick={() => {
                 setPreviewMode('single');
+                setSqlKeyFields([]);
                 setInputData('');
                 setOutputData('');
                 setOutputBlob(null);
